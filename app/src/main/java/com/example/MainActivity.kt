@@ -1,10 +1,15 @@
 package com.example
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -84,12 +89,13 @@ class MainActivity : ComponentActivity() {
         cloudShellManager = CloudShellManager(this)
         enableEdgeToEdge()
 
+        // Minta izin kebal penghemat baterai sistem secara otomatis
+        requestIgnoreBatteryOptimizations()
+
         setContent {
             MyApplicationTheme {
-                // KUNCI PENGAMAN: Mencegah tombol Back mematikan sesi Cloud Shell
                 BackHandler {
-                    // Minimalkan aplikasi ke background tanpa onDestroy
-                    moveTaskToBack(true)
+                    moveTaskToBack(true) // Minimalkan aplikasi tanpa menutup proses
                 }
 
                 CloudShellApp(
@@ -97,6 +103,26 @@ class MainActivity : ComponentActivity() {
                     onStartService = { startKeepAliveService() },
                     onStopService = { stopKeepAliveService() }
                 )
+            }
+        }
+    }
+
+    private fun requestIgnoreBatteryOptimizations() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                @SuppressLint("BatteryLife")
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
+            } catch (e: Exception) {
+                try {
+                    val intent = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                    startActivity(intent)
+                } catch (ex: Exception) {
+                    ex.printStackTrace()
+                }
             }
         }
     }
@@ -120,7 +146,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        // Hancurkan session HANYA jika pengguna memang sudah menekan STOP SESI
         if (!KeepAliveService.isRunning.value) {
             cloudShellManager.destroy()
         }
@@ -175,7 +200,6 @@ fun CloudShellApp(
                     .border(1.dp, TerminalBorder)
                     .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
-                // Header Baris 1: Status & Kontrol Sesi
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -198,7 +222,6 @@ fun CloudShellApp(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
 
-                        // Status Badge
                         Surface(
                             shape = RoundedCornerShape(4.dp),
                             color = if (isServiceRunning) TerminalGreen.copy(alpha = 0.2f) else TerminalBorder.copy(alpha = 0.5f),
@@ -231,7 +254,6 @@ fun CloudShellApp(
                         }
                     }
 
-                    // Tombol Sesi (Mulai / Stop)
                     if (isServiceRunning) {
                         Button(
                             onClick = onStopService,
@@ -277,7 +299,6 @@ fun CloudShellApp(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Header Baris 2: Sub-tools
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -367,7 +388,6 @@ fun CloudShellApp(
                 enter = fadeIn() + slideInVertically { it },
                 exit = fadeOut() + slideOutVertically { it }
             ) {
-                // Helper Bar Tombol Terminal Linux - duduk pas di atas keyboard tanpa double-gap
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -559,7 +579,6 @@ fun CloudShellApp(
                         GeckoView(ctx).apply {
                             setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
                             background = null
-                            // Cukup serahkan ke manager untuk binding session
                             manager.attachGeckoView(this)
                         }
                     },
