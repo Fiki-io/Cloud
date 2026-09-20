@@ -26,13 +26,12 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: gradle # Menyimpan library GeckoView & Compose agar build berikutnya super cepat
+          cache: gradle
 
       - name: 3. Siapkan & Simpan Permanen Gradle Wrapper 9.3.1 + Keystore ke Repo
         run: |
           NEED_COMMIT=false
 
-          # 1. Cek & Buat Gradle Wrapper 9.3.1 jika belum ada
           if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
             echo ">> Menyiapkan Gradle Wrapper 9.3.1..."
             if [ ! -f "gradlew" ]; then
@@ -50,7 +49,6 @@ jobs:
           fi
           chmod +x gradlew
 
-          # 2. Cek & Buat debug.keystore jika belum ada
           if [ ! -f "debug.keystore" ]; then
             echo ">> Membuat debug.keystore permanen..."
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
@@ -58,7 +56,6 @@ jobs:
           fi
           cp debug.keystore app/debug.keystore 2>/dev/null || true
 
-          # 3. Simpan permanen ke repo GitHub jika ada file baru
           if [ "$NEED_COMMIT" = true ]; then
             echo ">> Menyimpan gradlew, wrapper 9.3.1, dan debug.keystore ke repo..."
             git config user.name "github-actions[bot]"
