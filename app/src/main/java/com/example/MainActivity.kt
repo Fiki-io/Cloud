@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -29,9 +30,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -74,7 +73,6 @@ import com.example.ui.theme.TerminalSurfaceLight
 import com.example.ui.theme.TerminalYellow
 import com.example.ui.theme.TextLight
 import com.example.ui.theme.TextMuted
-import com.example.ui.theme.TextPrimary
 import org.mozilla.geckoview.GeckoView
 
 class MainActivity : ComponentActivity() {
@@ -88,6 +86,12 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             MyApplicationTheme {
+                // KUNCI PENGAMAN: Mencegah tombol Back mematikan sesi Cloud Shell
+                BackHandler {
+                    // Minimalkan aplikasi ke background tanpa onDestroy
+                    moveTaskToBack(true)
+                }
+
                 CloudShellApp(
                     manager = cloudShellManager,
                     onStartService = { startKeepAliveService() },
@@ -116,6 +120,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        // Hancurkan session HANYA jika pengguna memang sudah menekan STOP SESI
         if (!KeepAliveService.isRunning.value) {
             cloudShellManager.destroy()
         }
@@ -272,7 +277,7 @@ fun CloudShellApp(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Header Baris 2: Sub-tools (Keep-alive indicator, UA toggle, Reload)
+                // Header Baris 2: Sub-tools
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -280,7 +285,6 @@ fun CloudShellApp(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // Pulse Info Chip
                     Surface(
                         shape = RoundedCornerShape(3.dp),
                         color = TerminalSurfaceLight,
@@ -295,7 +299,6 @@ fun CloudShellApp(
                         )
                     }
 
-                    // Desktop Toggle
                     OutlinedButton(
                         onClick = { manager.toggleDesktopMode() },
                         shape = RoundedCornerShape(3.dp),
@@ -310,7 +313,6 @@ fun CloudShellApp(
                         )
                     }
 
-                    // Reload
                     OutlinedButton(
                         onClick = { manager.reload() },
                         shape = RoundedCornerShape(3.dp),
@@ -325,7 +327,6 @@ fun CloudShellApp(
                         )
                     }
 
-                    // Home Cloud Shell
                     OutlinedButton(
                         onClick = { manager.loadDefaultUrl() },
                         shape = RoundedCornerShape(3.dp),
@@ -340,7 +341,6 @@ fun CloudShellApp(
                         )
                     }
 
-                    // Manual Pulse Ping
                     OutlinedButton(
                         onClick = {
                             manager.injectPulse()
@@ -367,11 +367,10 @@ fun CloudShellApp(
                 enter = fadeIn() + slideInVertically { it },
                 exit = fadeOut() + slideOutVertically { it }
             ) {
-                // Helper Bar Tombol Terminal Linux - muncul persis di atas keyboard
+                // Helper Bar Tombol Terminal Linux - duduk pas di atas keyboard tanpa double-gap
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .imePadding()
                         .border(1.dp, TerminalBorder),
                     color = TerminalSurface
                 ) {
@@ -555,13 +554,12 @@ fun CloudShellApp(
                     .fillMaxSize()
                     .background(TerminalBg)
             ) {
-                // GeckoView Engine Viewport
                 AndroidView(
                     factory = { ctx ->
                         GeckoView(ctx).apply {
                             setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
                             background = null
-                            setSession(manager.session)
+                            // Cukup serahkan ke manager untuk binding session
                             manager.attachGeckoView(this)
                         }
                     },
@@ -609,10 +607,4 @@ fun formatDuration(seconds: Long): String {
     val mins = (seconds % 3600) / 60
     val secs = seconds % 60
     return String.format("%02d:%02d:%02d", hrs, mins, secs)
-}
-
-// Fallback composable for Greeting unit/screenshot test compatibility
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(text = "Hello $name!", modifier = modifier)
 }
