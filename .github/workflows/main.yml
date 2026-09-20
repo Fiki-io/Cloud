@@ -7,7 +7,6 @@ on:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-# Beri izin agar workflow bisa menyimpan debug.keystore permanen ke repo
 permissions:
   contents: write
 
@@ -20,53 +19,62 @@ jobs:
       - name: 1. Checkout Repository
         uses: actions/checkout@v4
         with:
-          # Ambil riwayat commit agar bisa push balik
           fetch-depth: 0
 
-      - name: 2. Setup Java JDK 17
+      - name: 2. Setup Java JDK 17 & Aktifkan Cache Cepat
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle # Menyimpan library GeckoView & Compose agar build berikutnya super cepat
 
-      - name: 3. Set Gradle Wrapper ke Versi 9.3.1
+      - name: 3. Siapkan & Simpan Permanen Gradle Wrapper 9.3.1 + Keystore ke Repo
         run: |
-          if [ ! -f "gradlew" ]; then
-            echo ">> Membuat Gradle Wrapper..."
-            gradle wrapper
+          NEED_COMMIT=false
+
+          # 1. Cek & Buat Gradle Wrapper 9.3.1 jika belum ada
+          if [ ! -f "gradlew" ] || [ ! -f "gradle/wrapper/gradle-wrapper.properties" ]; then
+            echo ">> Menyiapkan Gradle Wrapper 9.3.1..."
+            if [ ! -f "gradlew" ]; then
+              gradle wrapper
+            fi
+            mkdir -p gradle/wrapper
+            echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
+            echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+            echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.1-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
+            echo "networkTimeout=10000" >> gradle/wrapper/gradle-wrapper.properties
+            echo "validateDistributionUrl=true" >> gradle/wrapper/gradle-wrapper.properties
+            echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
+            echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+            NEED_COMMIT=true
           fi
-          mkdir -p gradle/wrapper
-          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
-          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
-          echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.1-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
-          echo "networkTimeout=10000" >> gradle/wrapper/gradle-wrapper.properties
-          echo "validateDistributionUrl=true" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
-          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
           chmod +x gradlew
 
-      - name: 4. Buat & Simpan debug.keystore Permanen ke Repo
-        run: |
+          # 2. Cek & Buat debug.keystore jika belum ada
           if [ ! -f "debug.keystore" ]; then
-            echo ">> debug.keystore belum ada, membuat kunci permanen baru..."
+            echo ">> Membuat debug.keystore permanen..."
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-            
-            # Simpan file kunci ke repo secara permanen
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add debug.keystore
-            git commit -m "chore: simpan debug.keystore permanen untuk update tanpa uninstall"
-            git push
-            echo ">> Kunci permanen berhasil disimpan ke repositori!"
-          else
-            echo ">> debug.keystore permanen ditemukan! Menggunakan kunci yang sama."
+            NEED_COMMIT=true
           fi
           cp debug.keystore app/debug.keystore 2>/dev/null || true
 
-      - name: 5. Compile & Build Debug APK
+          # 3. Simpan permanen ke repo GitHub jika ada file baru
+          if [ "$NEED_COMMIT" = true ]; then
+            echo ">> Menyimpan gradlew, wrapper 9.3.1, dan debug.keystore ke repo..."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -f gradlew gradlew.bat gradle/ debug.keystore 2>/dev/null || true
+            git commit -m "chore: simpan permanen gradlew, wrapper 9.3.1, dan debug.keystore"
+            git push origin HEAD:${{ github.ref_name }}
+            echo ">> Berhasil disimpan permanen ke repositori!"
+          else
+            echo ">> Semua file sistem (gradlew 9.3.1 & keystore) sudah permanen di repo."
+          fi
+
+      - name: 4. Compile & Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: 6. Simpan & Upload File APK
+      - name: 5. Simpan & Upload File APK
         uses: actions/upload-artifact@v4
         with:
           name: CloudShell-AntiStop-Debug-APK
