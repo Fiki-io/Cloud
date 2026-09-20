@@ -33,7 +33,6 @@ class CloudShellManager(private val context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var heartbeatJob: Job? = null
 
-    // Setting Runtime: Matikan auto-zoom langsung di level mesin C++ Gecko
     val runtime: GeckoRuntime by lazy {
         val runtimeSettings = GeckoRuntimeSettings.Builder()
             .webManifest(false)
@@ -42,8 +41,8 @@ class CloudShellManager(private val context: Context) {
             .consoleOutput(false)
             .debugLogging(false)
             .aboutConfigEnabled(false)
-            .inputAutoZoomEnabled(false)     // KUNCI: Matikan auto-zoom saat klik kolom teks
-            .doubleTapZoomingEnabled(false)  // KUNCI: Matikan zoom ketuk ganda
+            .inputAutoZoomEnabled(false)     // Matikan zoom otomatis pada input teks
+            .doubleTapZoomingEnabled(false)  // Matikan zoom ketukan ganda
             .build()
         GeckoRuntime.create(context.applicationContext, runtimeSettings)
     }
@@ -96,6 +95,9 @@ class CloudShellManager(private val context: Context) {
             .build()
 
         GeckoSession(settings).apply {
+            // Prioritas tertinggi agar GeckoView tidak membekukan WebSocket di background
+            setPriorityHint(GeckoSession.PRIORITY_HIGH)
+
             navigationDelegate = object : GeckoSession.NavigationDelegate {
                 override fun onLocationChange(
                     session: GeckoSession,
@@ -107,7 +109,6 @@ class CloudShellManager(private val context: Context) {
                     }
                 }
 
-                // SOLUSI ANTI-CRASH POPUP "IZINKAN": Menggunakan releaseSession resmi
                 override fun onNewSession(
                     session: GeckoSession,
                     uri: String
@@ -115,14 +116,19 @@ class CloudShellManager(private val context: Context) {
                     val newSession = GeckoSession(settings)
                     popupSession = newSession
 
-                    // Listener untuk menutup popup saat otorisasi selesai
                     newSession.contentDelegate = object : GeckoSession.ContentDelegate {
                         override fun onCloseRequest(s: GeckoSession) {
                             val gv = geckoViewRef?.get() ?: return
-                            gv.releaseSession()
-                            s.close()
-                            popupSession = null
-                            gv.setSession(this@apply) // Kembali ke terminal Cloud Shell
+                            gv.post {
+                                try {
+                                    gv.releaseSession()
+                                    s.close()
+                                    popupSession = null
+                                    gv.setSession(this@apply)
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                            }
                         }
                     }
 
@@ -134,20 +140,31 @@ class CloudShellManager(private val context: Context) {
                         ) {
                             if (url != null && (url.contains("shell.cloud.google.com") || url.contains("close"))) {
                                 val gv = geckoViewRef?.get() ?: return
-                                gv.releaseSession()
-                                s.close()
-                                popupSession = null
-                                gv.setSession(this@apply)
+                                gv.post {
+                                    try {
+                                        gv.releaseSession()
+                                        s.close()
+                                        popupSession = null
+                                        gv.setSession(this@apply)
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                }
                             }
                         }
                     }
 
                     newSession.open(runtime)
 
-                    // KUNCI PERBAIKAN: Lepaskan sesi lama dulu agar tidak crash Display Already Acquired
                     val gv = geckoViewRef?.get()
-                    gv?.releaseSession()
-                    gv?.setSession(newSession)
+                    gv?.post {
+                        try {
+                            gv.releaseSession()
+                            gv.setSession(newSession)
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
 
                     return GeckoResult.fromValue(newSession)
                 }
@@ -245,23 +262,28 @@ class CloudShellManager(private val context: Context) {
     }
 
     /**
-     * Mengunci viewport desktop dan mencegah segala bentuk gesture zoom sentuhan
+     * Injeksi Viewport Desktop 1280px, Anti-Zoom, Anti-Freeze, dan Auto-Reconnect
      */
     fun injectDesktopScaleAndAntiFreeze() {
         val script = "javascript:(function(){try{" +
-                // 1. Kunci Viewport Desktop 1280px permanen tanpa skala dinamis
                 "var mv=document.querySelector('meta[name=viewport]');" +
                 "if(!mv){mv=document.createElement('meta');mv.name='viewport';document.head.appendChild(mv);}" +
                 "mv.content='width=1280, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';" +
-                // 2. Cegah semua elemen klik memicu zoom
                 "var st=document.createElement('style');" +
                 "st.innerHTML='*, input, textarea, select, button, a { touch-action: manipulation !important; } input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; }';" +
                 "document.head.appendChild(st);" +
-                // 3. Anti-Freeze status
                 "Object.defineProperty(document,'hidden',{get:function(){return false;},configurable:true});" +
                 "Object.defineProperty(document,'visibilityState',{get:function(){return'visible';},configurable:true});" +
                 "Object.defineProperty(document,'webkitVisibilityState',{get:function(){return'visible';},configurable:true});" +
                 "window.addEventListener('visibilitychange',function(e){e.stopImmediatePropagation();},true);" +
+                "setInterval(function(){" +
+                "  try {" +
+                "    var btn = Array.from(document.querySelectorAll('button, a, span, div')).find(function(el){" +
+                "      return el.textContent && (el.textContent.indexOf('Sambungkan kembali') !== -1 || el.textContent.indexOf('Reconnect') !== -1);" +
+                "    });" +
+                "    if(btn){ btn.click(); }" +
+                "  } catch(e){}" +
+                "}, 3000);" +
                 "}catch(e){}})();void(0);"
 
         session.loadUri(script)
