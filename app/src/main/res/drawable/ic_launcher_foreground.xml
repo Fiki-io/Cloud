@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Terminal window header/outline -->
+    <path
+        android:fillColor="#282C34"
+        android:pathData="M24,28h60c3.3,0 6,2.7 6,6v40c0,3.3 -2.7,6 -6,6H24c-3.3,0 -6,-2.7 -6,-6V34C18,30.7 20.7,28 24,28z" />
+    <path
+        android:fillColor="#21252B"
+        android:pathData="M24,28h60c3.3,0 6,2.7 6,6v8H18v-8C18,30.7 20.7,28 24,28z" />
+    <!-- Three window dots -->
+    <path
+        android:fillColor="#E06C75"
+        android:pathData="M26,35a2,2 0 1,0 4,0a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#E5C07B"
+        android:pathData="M33,35a2,2 0 1,0 4,0a2,2 0 1,0 -4,0" />
+    <path
+        android:fillColor="#98C379"
+        android:pathData="M40,35a2,2 0 1,0 4,0a2,2 0 1,0 -4,0" />
+    <!-- Prompt chevron `>` -->
+    <path
+        android:fillColor="#4CAF50"
+        android:pathData="M30,48l10,7l-10,7l-2,-3l6,-4l-6,-4z" />
+    <!-- Cursor block `_` -->
+    <path
+        android:fillColor="#E0E0E0"
+        android:pathData="M44,61h14v3H44z" />
+</vector>
