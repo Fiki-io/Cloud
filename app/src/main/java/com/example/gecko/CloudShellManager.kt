@@ -1,8 +1,13 @@
 package com.example.gecko
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.KeyEvent
+import android.widget.Toast
 import com.example.service.KeepAliveService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +25,7 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import java.lang.ref.WeakReference
+import java.net.URLDecoder
 import kotlin.random.Random
 
 class CloudShellManager(private val context: Context) {
@@ -41,8 +47,8 @@ class CloudShellManager(private val context: Context) {
             .consoleOutput(false)
             .debugLogging(false)
             .aboutConfigEnabled(false)
-            .inputAutoZoomEnabled(false)     // Matikan zoom otomatis pada input teks
-            .doubleTapZoomingEnabled(false)  // Matikan zoom ketukan ganda
+            .inputAutoZoomEnabled(false)
+            .doubleTapZoomingEnabled(false)
             .build()
         GeckoRuntime.create(context.applicationContext, runtimeSettings)
     }
@@ -95,7 +101,6 @@ class CloudShellManager(private val context: Context) {
             .build()
 
         GeckoSession(settings).apply {
-            // Prioritas tertinggi agar GeckoView tidak membekukan WebSocket di background
             setPriorityHint(GeckoSession.PRIORITY_HIGH)
 
             navigationDelegate = object : GeckoSession.NavigationDelegate {
@@ -105,6 +110,22 @@ class CloudShellManager(private val context: Context) {
                     permissions: MutableList<GeckoSession.PermissionDelegate.ContentPermission>
                 ) {
                     if (url != null) {
+                        if (url.startsWith("cloudshell-copy:")) {
+                            try {
+                                val encoded = url.removePrefix("cloudshell-copy:")
+                                val text = URLDecoder.decode(encoded, "UTF-8")
+                                if (text.isNotEmpty()) {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("CloudShell", text))
+                                    Handler(Looper.getMainLooper()).post {
+                                        Toast.makeText(context, "Teks Tersalin ke HP!", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                            return
+                        }
                         _currentUrl.value = url
                     }
                 }
@@ -261,16 +282,13 @@ class CloudShellManager(private val context: Context) {
         }
     }
 
-    /**
-     * Injeksi Viewport Desktop 1280px, Anti-Zoom, Anti-Freeze, dan Auto-Reconnect
-     */
     fun injectDesktopScaleAndAntiFreeze() {
         val script = "javascript:(function(){try{" +
                 "var mv=document.querySelector('meta[name=viewport]');" +
                 "if(!mv){mv=document.createElement('meta');mv.name='viewport';document.head.appendChild(mv);}" +
                 "mv.content='width=1280, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';" +
                 "var st=document.createElement('style');" +
-                "st.innerHTML='*, input, textarea, select, button, a { touch-action: manipulation !important; } input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; }';" +
+                "st.innerHTML='*, .xterm, .xterm-rows, .xterm-screen { -webkit-user-select: text !important; user-select: text !important; } input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; }';" +
                 "document.head.appendChild(st);" +
                 "Object.defineProperty(document,'hidden',{get:function(){return false;},configurable:true});" +
                 "Object.defineProperty(document,'visibilityState',{get:function(){return'visible';},configurable:true});" +
@@ -287,6 +305,47 @@ class CloudShellManager(private val context: Context) {
                 "}catch(e){}})();void(0);"
 
         session.loadUri(script)
+    }
+
+    fun copySelectedText() {
+        val script = "javascript:(function(){try{" +
+                "var sel = window.getSelection().toString();" +
+                "if(sel){ window.location.href = 'cloudshell-copy:' + encodeURIComponent(sel); }" +
+                "}catch(e){}})();void(0);"
+        session.loadUri(script)
+    }
+
+    fun pasteText(text: String) {
+        val safeText = text.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\"", "\\\"")
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+
+        val script = "javascript:(function(){try{" +
+                "document.execCommand('insertText', false, '$safeText');" +
+                "}catch(e){}})();void(0);"
+        session.loadUri(script)
+    }
+
+    /**
+     * FUNGSI SAKTI: Otomatis mengetik perintah ke terminal dan menekan ENTER
+     */
+    fun runTerminalCommand(command: String) {
+        val safeText = command.replace("\\", "\\\\")
+            .replace("'", "\\'")
+            .replace("\"", "\\\"")
+
+        val script = "javascript:(function(){try{" +
+                "document.execCommand('insertText', false, '$safeText');" +
+                "}catch(e){}})();void(0);"
+        session.loadUri(script)
+
+        // Jeda 150 milidetik agar teks masuk ke xterm, lalu tekan ENTER otomatis
+        scope.launch {
+            delay(150L)
+            sendNativeKeyEvent(KeyEvent.KEYCODE_ENTER)
+        }
     }
 
     private fun startHeartbeat() {
@@ -310,35 +369,17 @@ class CloudShellManager(private val context: Context) {
 
     fun injectPulse() {
         sendNativeKeyEvent(KeyEvent.KEYCODE_SHIFT_LEFT)
-
-        val script = "javascript:(function(){try{" +
-                "var t=document.querySelector('.xterm-helper-textarea')||document.querySelector('textarea')||document.activeElement||document.body;" +
-                "if(t){" +
-                "t.dispatchEvent(new KeyboardEvent('keydown',{key:'Shift',code:'ShiftLeft',keyCode:16,which:16,bubbles:true}));" +
-                "t.dispatchEvent(new KeyboardEvent('keyup',{key:'Shift',code:'ShiftLeft',keyCode:16,which:16,bubbles:true}));" +
-                "}}catch(e){}})();void(0);"
-        session.loadUri(script)
     }
 
     fun sendTerminalKey(
         androidKeyCode: Int,
-        key: String,
-        code: String,
-        jsKeyCode: Int,
         ctrl: Boolean = false,
-        alt: Boolean = false
+        alt: Boolean = false,
+        shift: Boolean = false
     ) {
         if (androidKeyCode != KeyEvent.KEYCODE_UNKNOWN) {
-            sendNativeKeyEvent(androidKeyCode, ctrl = ctrl, alt = alt)
+            sendNativeKeyEvent(androidKeyCode, ctrl = ctrl, alt = alt, shift = shift)
         }
-
-        val script = "javascript:(function(){try{" +
-                "var t=document.querySelector('.xterm-helper-textarea')||document.activeElement||document.querySelector('textarea')||document.body;" +
-                "if(t){" +
-                "t.dispatchEvent(new KeyboardEvent('keydown',{key:'$key',code:'$code',keyCode:$jsKeyCode,which:$jsKeyCode,ctrlKey:$ctrl,altKey:$alt,bubbles:true,cancelable:true}));" +
-                "t.dispatchEvent(new KeyboardEvent('keyup',{key:'$key',code:'$code',keyCode:$jsKeyCode,which:$jsKeyCode,ctrlKey:$ctrl,altKey:$alt,bubbles:true,cancelable:true}));" +
-                "}}catch(e){}})();void(0);"
-        session.loadUri(script)
     }
 
     fun destroy() {
