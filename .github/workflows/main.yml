@@ -38,10 +38,18 @@ jobs:
           echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
           chmod +x gradlew
 
-      - name: 4. Compile & Build Debug APK
+      - name: 4. Buat debug.keystore Otomatis
+        run: |
+          if [ ! -f "debug.keystore" ]; then
+            echo ">> Membuat debug.keystore otomatis..."
+            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          fi
+          cp debug.keystore app/debug.keystore 2>/dev/null || true
+
+      - name: 5. Compile & Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: 5. Simpan & Upload File APK
+      - name: 6. Simpan & Upload File APK
         uses: actions/upload-artifact@v4
         with:
           name: CloudShell-AntiStop-Debug-APK
