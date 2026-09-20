@@ -35,7 +35,9 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -89,13 +91,12 @@ class MainActivity : ComponentActivity() {
         cloudShellManager = CloudShellManager(this)
         enableEdgeToEdge()
 
-        // Minta izin kebal penghemat baterai sistem secara otomatis
         requestIgnoreBatteryOptimizations()
 
         setContent {
             MyApplicationTheme {
                 BackHandler {
-                    moveTaskToBack(true) // Minimalkan aplikasi tanpa menutup proses
+                    moveTaskToBack(true)
                 }
 
                 CloudShellApp(
@@ -381,12 +382,54 @@ fun CloudShellApp(
                     }
                 }
             }
-        },
-        bottomBar = {
+        }
+    ) { innerPadding ->
+        // KUNCI PERBAIKAN: Seluruh Box konten diikat dengan .imePadding()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(top = innerPadding.calculateTopPadding())
+                .navigationBarsPadding() // Jarak dari bar navigasi bawah
+                .imePadding()            // Otomatis terangkat ke ATAS KEYBOARD saat keyboard muncul!
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (isLoading) {
+                    LinearProgressIndicator(
+                        progress = { progress.toFloat() / 100f },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp),
+                        color = TerminalGreen,
+                        trackColor = TerminalSurface
+                    )
+                }
+
+                // GeckoView Engine
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(TerminalBg)
+                ) {
+                    AndroidView(
+                        factory = { ctx ->
+                            GeckoView(ctx).apply {
+                                setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
+                                background = null
+                                manager.attachGeckoView(this)
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+
+            // Bilah Tombol Terminal: DIJAMIN 100% NANGKRING DI ATAS KEYBOARD
             AnimatedVisibility(
                 visible = isImeVisible,
                 enter = fadeIn() + slideInVertically { it },
-                exit = fadeOut() + slideOutVertically { it }
+                exit = fadeOut() + slideOutVertically { it },
+                modifier = Modifier.align(Alignment.BottomCenter)
             ) {
                 Surface(
                     modifier = Modifier
@@ -550,40 +593,6 @@ fun CloudShellApp(
                         }
                     }
                 }
-            }
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            if (isLoading) {
-                LinearProgressIndicator(
-                    progress = { progress.toFloat() / 100f },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp),
-                    color = TerminalGreen,
-                    trackColor = TerminalSurface
-                )
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(TerminalBg)
-            ) {
-                AndroidView(
-                    factory = { ctx ->
-                        GeckoView(ctx).apply {
-                            setViewBackend(GeckoView.BACKEND_TEXTURE_VIEW)
-                            background = null
-                            manager.attachGeckoView(this)
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
             }
         }
     }
