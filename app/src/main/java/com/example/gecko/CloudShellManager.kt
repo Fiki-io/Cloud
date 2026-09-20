@@ -30,7 +30,6 @@ class CloudShellManager(private val context: Context) {
         const val MOBILE_UA = "Mozilla/5.0 (Android; Mobile; rv:125.0) Gecko/125.0 Firefox/125.0"
     }
 
-    // SupervisorJob menjamin jika 1 tugas coroutine error, timer heartbeat tidak ikut mati
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var heartbeatJob: Job? = null
 
@@ -63,16 +62,14 @@ class CloudShellManager(private val context: Context) {
 
     private var geckoViewRef: WeakReference<GeckoView>? = null
 
+    // Session popup penampung jika Google membuka otorisasi OAuth
+    private var popupSession: GeckoSession? = null
+
     fun attachGeckoView(view: GeckoView) {
         geckoViewRef = WeakReference(view)
-        // Hubungkan session ke view tampilan saat activity siap
         view.setSession(session)
     }
 
-    /**
-     * Mengirimkan Hardware KeyEvent langsung ke GeckoView.
-     * Metode ini 100% menembus iframe sandbox Cloud Shell tanpa diblokir CSP.
-     */
     fun sendNativeKeyEvent(keyCode: Int, ctrl: Boolean = false, alt: Boolean = false, shift: Boolean = false) {
         val view = geckoViewRef?.get() ?: return
         var metaState = 0
@@ -94,6 +91,7 @@ class CloudShellManager(private val context: Context) {
         val settings = GeckoSessionSettings.Builder()
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
             .userAgentOverride(DESKTOP_UA)
+            .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP) // Kunci Viewport Mode Desktop Asli
             .build()
 
         GeckoSession(settings).apply {
@@ -108,13 +106,33 @@ class CloudShellManager(private val context: Context) {
                     }
                 }
 
+                // SOLUSI POPUP OAUTH IZINKAN CLOUD SHELL
                 override fun onNewSession(
                     session: GeckoSession,
                     uri: String
                 ): GeckoResult<GeckoSession>? {
-                    // Mencegah crash internal C++ GeckoView saat login Google membuka popup baru
-                    session.loadUri(uri)
-                    return null
+                    // Buat session terpisah untuk otorisasi tanpa menimpa session terminal utama
+                    val newSession = GeckoSession(settings)
+                    popupSession = newSession
+                    
+                    newSession.navigationDelegate = object : GeckoSession.NavigationDelegate {
+                        override fun onLocationChange(s: GeckoSession, url: String?, p: MutableList<GeckoSession.PermissionDelegate.ContentPermission>) {
+                            // Jika popup selesai otentikasi (kembali ke Cloud Shell atau selesai), tutup popup
+                            if (url != null && (url.contains("shell.cloud.google.com") || url.contains("close"))) {
+                                newSession.close()
+                                popupSession = null
+                                // Kembalikan view ke session utama
+                                geckoViewRef?.get()?.setSession(this@apply)
+                            }
+                        }
+                    }
+
+                    newSession.open(runtime)
+                    // Tampilkan popup sementara di view agar pengguna bisa klik izinkan
+                    geckoViewRef?.get()?.setSession(newSession)
+                    newSession.loadUri(uri)
+
+                    return GeckoResult.fromValue(newSession)
                 }
             }
 
@@ -163,7 +181,7 @@ class CloudShellManager(private val context: Context) {
                     _isLoading.value = false
                     _progress.value = 100
                     if (success) {
-                        injectAntiFreezeScript()
+                        injectDesktopScaleAndAntiFreeze()
                     }
                 }
 
@@ -210,31 +228,29 @@ class CloudShellManager(private val context: Context) {
     }
 
     /**
-     * Menyuntikkan:
-     * 1. CSS Anti-Zoom: Mengunci font input minimal 16px agar keyboard HP muncul tanpa layar membesar.
-     * 2. Meta Viewport Locking: Mengunci skala layar rasio 1:1.
-     * 3. Anti-Freeze: Memalsukan status tab agar selalu terbaca aktif di background.
+     * Mengatur ukuran layar desktop presisi (1280px),
+     * mematikan auto-zoom pada input, dan menjaga status tab tetap aktif.
      */
-    fun injectAntiFreezeScript() {
+    fun injectDesktopScaleAndAntiFreeze() {
         val script = "javascript:(function(){try{" +
-                "var st=document.createElement('style');" +
-                "st.innerHTML='input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; touch-action: pan-x pan-y !important; }';" +
-                "document.head.appendChild(st);" +
+                // 1. Kunci Viewport ke ukuran Desktop 1280px permanen (tidak membesar seperti HP)
                 "var mv=document.querySelector('meta[name=viewport]');" +
                 "if(!mv){mv=document.createElement('meta');mv.name='viewport';document.head.appendChild(mv);}" +
-                "mv.content='width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';" +
+                "mv.content='width=1280, initial-scale=0.75, maximum-scale=2.0, user-scalable=yes';" +
+                // 2. Cegah auto-zoom saat klik teks / input terminal
+                "var st=document.createElement('style');" +
+                "st.innerHTML='input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; }';" +
+                "document.head.appendChild(st);" +
+                // 3. Spoofing visibility agar tidak freeze di background
                 "Object.defineProperty(document,'hidden',{get:function(){return false;},configurable:true});" +
                 "Object.defineProperty(document,'visibilityState',{get:function(){return'visible';},configurable:true});" +
                 "Object.defineProperty(document,'webkitVisibilityState',{get:function(){return'visible';},configurable:true});" +
                 "window.addEventListener('visibilitychange',function(e){e.stopImmediatePropagation();},true);" +
                 "}catch(e){}})();void(0);"
-        
+
         session.loadUri(script)
     }
 
-    /**
-     * Heartbeat pulse dengan random jitter (180s - 260s) agar pola tidak terbaca bot kaku.
-     */
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
@@ -247,16 +263,13 @@ class CloudShellManager(private val context: Context) {
                     try {
                         KeepAliveService.recordHeartbeat()
                     } catch (e: Exception) {
-                        // Mencegah error jika service belum sempat terikat
+                        e.printStackTrace()
                     }
                 }
             }
         }
     }
 
-    /**
-     * Mengirimkan tombol Shift secara hardware dan fallback DOM event.
-     */
     fun injectPulse() {
         sendNativeKeyEvent(KeyEvent.KEYCODE_SHIFT_LEFT)
 
@@ -269,9 +282,6 @@ class CloudShellManager(private val context: Context) {
         session.loadUri(script)
     }
 
-    /**
-     * Pengiriman tombol shortcut terminal (ESC, TAB, Arrow, Ctrl+C, dll).
-     */
     fun sendTerminalKey(
         androidKeyCode: Int,
         key: String,
@@ -295,6 +305,7 @@ class CloudShellManager(private val context: Context) {
 
     fun destroy() {
         heartbeatJob?.cancel()
+        popupSession?.close()
         session.close()
     }
 }
