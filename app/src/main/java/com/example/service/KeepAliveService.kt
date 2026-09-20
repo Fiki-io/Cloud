@@ -27,7 +27,6 @@ import kotlinx.coroutines.launch
 
 class KeepAliveService : Service() {
 
-    // Gunakan SupervisorJob agar kegagalan 1 thread tidak merusak scope
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var timerJob: Job? = null
 
@@ -62,7 +61,6 @@ class KeepAliveService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        // Langsung tampilkan notifikasi di onCreate agar bebas dari crash batas 5 detik Android
         startForegroundSafely("Sesi Dimulai...")
     }
 
@@ -98,7 +96,6 @@ class KeepAliveService : Service() {
     }
 
     private fun acquireLocks() {
-        // WakeLock: Mencegah CPU tidur saat layar HP mati / buka AVNC
         if (wakeLock == null || wakeLock?.isHeld == false) {
             try {
                 val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -107,14 +104,13 @@ class KeepAliveService : Service() {
                     "CloudShell:KeepAliveWakeLock"
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(4 * 60 * 60 * 1000L) // Maksimal 4 jam pengaman
+                    acquire(4 * 60 * 60 * 1000L) // 4 jam pengaman
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
 
-        // WifiLock: Menjaga stabilitas socket WebSocket Cloud Shell
         if (wifiLock == null || wifiLock?.isHeld == false) {
             try {
                 val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -205,7 +201,7 @@ class KeepAliveService : Service() {
 
     override fun onDestroy() {
         timerJob?.cancel()
-        serviceScope.cancel() // Matikan semua coroutine di scope ini
+        serviceScope.cancel()
         _isRunning.value = false
         _elapsedSeconds.value = 0L
 
