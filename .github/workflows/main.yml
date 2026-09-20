@@ -22,12 +22,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: 3. Cek atau Buat Gradle Wrapper Otomatis
+      - name: 3. Set Gradle Wrapper ke Versi 9.3.1 (Wajib untuk AGP 9.1+)
         run: |
           if [ ! -f "gradlew" ]; then
-            echo ">> gradlew tidak ditemukan. Membuat Gradle Wrapper otomatis..."
-            gradle wrapper --gradle-version 8.7
+            echo ">> Membuat Gradle Wrapper..."
+            gradle wrapper
           fi
+          mkdir -p gradle/wrapper
+          echo "distributionBase=GRADLE_USER_HOME" > gradle/wrapper/gradle-wrapper.properties
+          echo "distributionPath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
+          echo "distributionUrl=https\\://services.gradle.org/distributions/gradle-9.3.1-bin.zip" >> gradle/wrapper/gradle-wrapper.properties
+          echo "networkTimeout=10000" >> gradle/wrapper/gradle-wrapper.properties
+          echo "validateDistributionUrl=true" >> gradle/wrapper/gradle-wrapper.properties
+          echo "zipStoreBase=GRADLE_USER_HOME" >> gradle/wrapper/gradle-wrapper.properties
+          echo "zipStorePath=wrapper/dists" >> gradle/wrapper/gradle-wrapper.properties
           chmod +x gradlew
 
       - name: 4. Compile & Build Debug APK
