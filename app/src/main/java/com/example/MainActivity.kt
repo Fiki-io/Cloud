@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -54,9 +55,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -173,9 +171,6 @@ fun CloudShellApp(
     val isDesktopMode by manager.isDesktopMode.collectAsState()
     val isPulseActive by manager.isPulseActive.collectAsState()
 
-    var ctrlActive by remember { mutableStateOf(false) }
-    var altActive by remember { mutableStateOf(false) }
-
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -201,6 +196,7 @@ fun CloudShellApp(
                     .border(1.dp, TerminalBorder)
                     .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
+                // Baris 1: Judul & Tombol Sesi
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -300,6 +296,7 @@ fun CloudShellApp(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
+                // Baris 2: Shortcut Tools & TOMBOL SAKTI (START & PINGGY)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -307,13 +304,55 @@ fun CloudShellApp(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    // 1. TOMBOL OTOMATIS: JALANKAN ./start.sh
+                    Button(
+                        onClick = {
+                            manager.runTerminalCommand("./start.sh")
+                            Toast.makeText(context, "Menjalankan ./start.sh...", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TerminalGreen),
+                        shape = RoundedCornerShape(3.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp, vertical = 2.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Text(
+                            text = "▶ START",
+                            color = TerminalBg,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // 2. TOMBOL OTOMATIS: RECONNECT PINGGY (Ctrl+C dulu lalu ssh connect)
+                    Button(
+                        onClick = {
+                            // Batalkan sesi gantung dengan ^C lalu sambung ulang
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_C, ctrl = true)
+                            manager.runTerminalCommand("ssh -p 443 -R0:localhost:5901 -o StrictHostKeyChecking=no tcp@a.pinggy.io")
+                            Toast.makeText(context, "Menyambungkan ulang Pinggy...", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = TerminalYellow),
+                        shape = RoundedCornerShape(3.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 9.dp, vertical = 2.dp),
+                        modifier = Modifier.height(26.dp)
+                    ) {
+                        Text(
+                            text = "⚡ PINGGY",
+                            color = TerminalBg,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
                     Surface(
                         shape = RoundedCornerShape(3.dp),
                         color = TerminalSurfaceLight,
                         border = androidx.compose.foundation.BorderStroke(1.dp, TerminalBorder)
                     ) {
                         Text(
-                            text = if (isPulseActive) "Anti-Stop: Aktif ($heartbeatCount pings)" else "Anti-Stop: Nonaktif",
+                            text = if (isPulseActive) "Anti-Stop ($heartbeatCount pings)" else "Anti-Stop: Off",
                             color = if (isPulseActive) TerminalBlue else TextMuted,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 10.sp,
@@ -328,7 +367,7 @@ fun CloudShellApp(
                         modifier = Modifier.height(26.dp)
                     ) {
                         Text(
-                            text = if (isDesktopMode) "Mode: Desktop" else "Mode: Mobile",
+                            text = if (isDesktopMode) "Desktop" else "Mobile",
                             color = TextLight,
                             fontFamily = FontFamily.Monospace,
                             fontSize = 10.sp
@@ -362,35 +401,87 @@ fun CloudShellApp(
                             fontSize = 10.sp
                         )
                     }
-
-                    OutlinedButton(
-                        onClick = {
-                            manager.injectPulse()
-                            KeepAliveService.recordHeartbeat()
-                            Toast.makeText(context, "Sinyal Anti-Stop terkirim", Toast.LENGTH_SHORT).show()
-                        },
-                        shape = RoundedCornerShape(3.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(26.dp)
+                }
+            }
+        },
+        bottomBar = {
+            AnimatedVisibility(
+                visible = isImeVisible,
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it }
+            ) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding() // Nangkring persis di atas keyboard HP
+                        .border(1.dp, TerminalBorder),
+                    color = TerminalSurface
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "Ping",
-                            color = TerminalYellow,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp
-                        )
+                        TerminalKeyButton(label = "PASTE", activeColor = TerminalGreen) {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
+                            if (text.isNotEmpty()) {
+                                manager.pasteText(text)
+                                Toast.makeText(context, "Ditempel!", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Papan klip HP kosong", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+
+                        TerminalKeyButton(label = "COPY", activeColor = TerminalBlue) {
+                            manager.copySelectedText()
+                        }
+
+                        TerminalKeyButton(label = "ESC") {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_ESCAPE)
+                        }
+
+                        TerminalKeyButton(label = "TAB") {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_TAB)
+                        }
+
+                        TerminalKeyButton(label = "▲") {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_DPAD_UP)
+                        }
+                        TerminalKeyButton(label = "▼") {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_DPAD_DOWN)
+                        }
+                        TerminalKeyButton(label = "◄") {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_DPAD_LEFT)
+                        }
+                        TerminalKeyButton(label = "►") {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_DPAD_RIGHT)
+                        }
+
+                        TerminalKeyButton(label = "^C", activeColor = TerminalRed) {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_C, ctrl = true)
+                        }
+
+                        TerminalKeyButton(label = "^L", activeColor = TerminalYellow) {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_L, ctrl = true)
+                        }
+
+                        TerminalKeyButton(label = "ENTER", activeColor = TerminalGreen) {
+                            manager.sendTerminalKey(KeyEvent.KEYCODE_ENTER)
+                        }
                     }
                 }
             }
         }
     ) { innerPadding ->
-        // KUNCI PERBAIKAN: Seluruh Box konten diikat dengan .imePadding()
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = innerPadding.calculateTopPadding())
-                .navigationBarsPadding() // Jarak dari bar navigasi bawah
-                .imePadding()            // Otomatis terangkat ke ATAS KEYBOARD saat keyboard muncul!
+                .navigationBarsPadding()
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 if (isLoading) {
@@ -404,7 +495,6 @@ fun CloudShellApp(
                     )
                 }
 
-                // GeckoView Engine
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -421,177 +511,6 @@ fun CloudShellApp(
                         },
                         modifier = Modifier.fillMaxSize()
                     )
-                }
-            }
-
-            // Bilah Tombol Terminal: DIJAMIN 100% NANGKRING DI ATAS KEYBOARD
-            AnimatedVisibility(
-                visible = isImeVisible,
-                enter = fadeIn() + slideInVertically { it },
-                exit = fadeOut() + slideOutVertically { it },
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .border(1.dp, TerminalBorder),
-                    color = TerminalSurface
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 4.dp)
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        TerminalKeyButton(label = "ESC") {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_ESCAPE,
-                                key = "Escape",
-                                code = "Escape",
-                                jsKeyCode = 27,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "TAB") {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_TAB,
-                                key = "Tab",
-                                code = "Tab",
-                                jsKeyCode = 9,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(
-                            label = "CTRL",
-                            isActive = ctrlActive,
-                            activeColor = TerminalYellow
-                        ) {
-                            ctrlActive = !ctrlActive
-                        }
-                        TerminalKeyButton(
-                            label = "ALT",
-                            isActive = altActive,
-                            activeColor = TerminalYellow
-                        ) {
-                            altActive = !altActive
-                        }
-                        TerminalKeyButton(label = "▲") {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_DPAD_UP,
-                                key = "ArrowUp",
-                                code = "ArrowUp",
-                                jsKeyCode = 38,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "▼") {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_DPAD_DOWN,
-                                key = "ArrowDown",
-                                code = "ArrowDown",
-                                jsKeyCode = 40,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "◄") {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_DPAD_LEFT,
-                                key = "ArrowLeft",
-                                code = "ArrowLeft",
-                                jsKeyCode = 37,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "►") {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_DPAD_RIGHT,
-                                key = "ArrowRight",
-                                code = "ArrowRight",
-                                jsKeyCode = 39,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "^C", activeColor = TerminalRed) {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_C,
-                                key = "c",
-                                code = "KeyC",
-                                jsKeyCode = 67,
-                                ctrl = true,
-                                alt = false
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "^D", activeColor = TerminalYellow) {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_D,
-                                key = "d",
-                                code = "KeyD",
-                                jsKeyCode = 68,
-                                ctrl = true,
-                                alt = false
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "^Z", activeColor = TerminalYellow) {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_Z,
-                                key = "z",
-                                code = "KeyZ",
-                                jsKeyCode = 90,
-                                ctrl = true,
-                                alt = false
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "^L", activeColor = TerminalBlue) {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_L,
-                                key = "l",
-                                code = "KeyL",
-                                jsKeyCode = 76,
-                                ctrl = true,
-                                alt = false
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                        TerminalKeyButton(label = "ENTER", activeColor = TerminalGreen) {
-                            manager.sendTerminalKey(
-                                androidKeyCode = KeyEvent.KEYCODE_ENTER,
-                                key = "Enter",
-                                code = "Enter",
-                                jsKeyCode = 13,
-                                ctrl = ctrlActive,
-                                alt = altActive
-                            )
-                            ctrlActive = false
-                            altActive = false
-                        }
-                    }
                 }
             }
         }
