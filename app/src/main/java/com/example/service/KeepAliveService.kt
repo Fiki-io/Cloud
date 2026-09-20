@@ -17,6 +17,8 @@ import com.example.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,7 +27,8 @@ import kotlinx.coroutines.launch
 
 class KeepAliveService : Service() {
 
-    private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
+    // Gunakan SupervisorJob agar kegagalan 1 thread tidak merusak scope
+    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var timerJob: Job? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -59,6 +62,8 @@ class KeepAliveService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // Langsung tampilkan notifikasi di onCreate agar bebas dari crash batas 5 detik Android
+        startForegroundSafely("Sesi Dimulai...")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -68,54 +73,63 @@ class KeepAliveService : Service() {
             return START_NOT_STICKY
         }
 
-        startForegroundWithLocks()
+        acquireLocks()
         startTimer()
 
         return START_STICKY
     }
 
-    private fun startForegroundWithLocks() {
-        // Acquire WakeLock to prevent CPU sleeping when screen turns off or app is minimized
+    private fun startForegroundSafely(initialText: String) {
+        val notification = buildNotification(initialText)
         try {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "CloudShell:KeepAliveWakeLock"
-            ).apply {
-                setReferenceCounted(false)
-                acquire(4 * 60 * 60 * 1000L) // Max 4 hours safety limit
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
             }
+            _isRunning.value = true
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
 
-        // Acquire WifiLock to maintain high performance network socket
-        try {
-            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
-            wifiLock = wifiManager.createWifiLock(
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                "CloudShell:WifiLock"
-            ).apply {
-                setReferenceCounted(false)
-                acquire()
+    private fun acquireLocks() {
+        // WakeLock: Mencegah CPU tidur saat layar HP mati / buka AVNC
+        if (wakeLock == null || wakeLock?.isHeld == false) {
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "CloudShell:KeepAliveWakeLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire(4 * 60 * 60 * 1000L) // Maksimal 4 jam pengaman
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
         }
 
-        val notification = buildNotification("Sesi Aktif: 00:00:00")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        // WifiLock: Menjaga stabilitas socket WebSocket Cloud Shell
+        if (wifiLock == null || wifiLock?.isHeld == false) {
+            try {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION")
+                wifiLock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "CloudShell:WifiLock"
+                ).apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
-
-        _isRunning.value = true
     }
 
     private fun startTimer() {
@@ -126,7 +140,6 @@ class KeepAliveService : Service() {
                 delay(1000L)
                 _elapsedSeconds.value += 1
                 if (_elapsedSeconds.value % 60 == 0L) {
-                    // Update notification text every minute
                     val formatted = formatDuration(_elapsedSeconds.value)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                     manager.notify(NOTIFICATION_ID, buildNotification("Sesi Aktif: $formatted"))
@@ -192,6 +205,7 @@ class KeepAliveService : Service() {
 
     override fun onDestroy() {
         timerJob?.cancel()
+        serviceScope.cancel() // Matikan semua coroutine di scope ini
         _isRunning.value = false
         _elapsedSeconds.value = 0L
 
