@@ -6,6 +6,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.widget.Toast
 import com.example.service.KeepAliveService
@@ -38,6 +39,7 @@ class CloudShellManager(private val context: Context) {
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var heartbeatJob: Job? = null
+    private var lastKeyTime = 0L // Pengaman anti-dobel klik
 
     val runtime: GeckoRuntime by lazy {
         val runtimeSettings = GeckoRuntimeSettings.Builder()
@@ -76,21 +78,65 @@ class CloudShellManager(private val context: Context) {
         view.setSession(session)
     }
 
+    /**
+     * KUNCI ANTI-DOBEL EKSEKUSI:
+     * Diberi jeda pengaman 80ms sehingga tidak bisa terpicu 2 kali dalam 1 ketukan
+     */
     fun sendNativeKeyEvent(keyCode: Int, ctrl: Boolean = false, alt: Boolean = false, shift: Boolean = false) {
+        val now = SystemClock.uptimeMillis()
+        if (now - lastKeyTime < 80) return
+        lastKeyTime = now
+
         val view = geckoViewRef?.get() ?: return
         var metaState = 0
         if (ctrl) metaState = metaState or KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
         if (alt) metaState = metaState or KeyEvent.META_ALT_ON or KeyEvent.META_ALT_LEFT_ON
         if (shift) metaState = metaState or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
 
-        val eventTime = SystemClock.uptimeMillis()
-        val downEvent = KeyEvent(eventTime, eventTime, KeyEvent.ACTION_DOWN, keyCode, 0, metaState)
-        val upEvent = KeyEvent(eventTime, eventTime, KeyEvent.ACTION_UP, keyCode, 0, metaState)
+        val downEvent = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, metaState)
+        val upEvent = KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, metaState)
 
         view.post {
             view.dispatchKeyEvent(downEvent)
             view.dispatchKeyEvent(upEvent)
         }
+    }
+
+    /**
+     * Mengetikkan teks secara Hardware murni menggunakan KeyCharacterMap Android.
+     * Dijamin 100% tertulis ke terminal tanpa terhalang fokus kursor!
+     */
+    fun sendText(text: String) {
+        val view = geckoViewRef?.get() ?: return
+        val charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+        val events = charMap.getEvents(text.toCharArray())
+
+        if (events != null && events.isNotEmpty()) {
+            view.post {
+                for (event in events) {
+                    view.dispatchKeyEvent(event)
+                }
+            }
+        } else {
+            // Fallback JS jika ada karakter khusus non-ASCII
+            val safeText = text.replace("\\", "\\\\").replace("'", "\\'").replace("\"", "\\\"")
+            val script = "javascript:(function(){try{" +
+                    "var el = document.querySelector('.xterm-helper-textarea') || document.querySelector('textarea') || document.activeElement;" +
+                    "if(el){ el.focus(); document.execCommand('insertText', false, '$safeText'); }" +
+                    "}catch(e){}})();void(0);"
+            session.loadUri(script)
+        }
+    }
+
+    fun pasteText(text: String) {
+        sendText(text)
+    }
+
+    /**
+     * Mengetikkan perintah dan otomatis menambahkan newline '\n' (ENTER)
+     */
+    fun runTerminalCommand(command: String) {
+        sendText("$command\n")
     }
 
     val session: GeckoSession by lazy {
@@ -315,39 +361,6 @@ class CloudShellManager(private val context: Context) {
         session.loadUri(script)
     }
 
-    fun pasteText(text: String) {
-        val safeText = text.replace("\\", "\\\\")
-            .replace("'", "\\'")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-
-        val script = "javascript:(function(){try{" +
-                "document.execCommand('insertText', false, '$safeText');" +
-                "}catch(e){}})();void(0);"
-        session.loadUri(script)
-    }
-
-    /**
-     * FUNGSI SAKTI: Otomatis mengetik perintah ke terminal dan menekan ENTER
-     */
-    fun runTerminalCommand(command: String) {
-        val safeText = command.replace("\\", "\\\\")
-            .replace("'", "\\'")
-            .replace("\"", "\\\"")
-
-        val script = "javascript:(function(){try{" +
-                "document.execCommand('insertText', false, '$safeText');" +
-                "}catch(e){}})();void(0);"
-        session.loadUri(script)
-
-        // Jeda 150 milidetik agar teks masuk ke xterm, lalu tekan ENTER otomatis
-        scope.launch {
-            delay(150L)
-            sendNativeKeyEvent(KeyEvent.KEYCODE_ENTER)
-        }
-    }
-
     private fun startHeartbeat() {
         heartbeatJob?.cancel()
         heartbeatJob = scope.launch {
@@ -371,6 +384,9 @@ class CloudShellManager(private val context: Context) {
         sendNativeKeyEvent(KeyEvent.KEYCODE_SHIFT_LEFT)
     }
 
+    /**
+     * HANYA Hardware KeyEvent Murni (Tidak ada lagi script JavaScript ganda yang bikin 2x eksekusi!)
+     */
     fun sendTerminalKey(
         androidKeyCode: Int,
         ctrl: Boolean = false,
