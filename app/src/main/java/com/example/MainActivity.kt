@@ -196,7 +196,6 @@ fun CloudShellApp(
                     .border(1.dp, TerminalBorder)
                     .padding(horizontal = 10.dp, vertical = 6.dp)
             ) {
-                // Baris 1: Judul & Tombol Sesi
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -296,7 +295,7 @@ fun CloudShellApp(
 
                 Spacer(modifier = Modifier.height(6.dp))
 
-                // Baris 2: Shortcut Tools & TOMBOL SAKTI (START & PINGGY)
+                // Baris Tombol Atas: START, PINGGY, Desktop, Reload, Home
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -304,7 +303,7 @@ fun CloudShellApp(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 1. TOMBOL OTOMATIS: JALANKAN ./start.sh
+                    // Tombol Otomatis Jalankan ./start.sh
                     Button(
                         onClick = {
                             manager.runTerminalCommand("./start.sh")
@@ -324,10 +323,9 @@ fun CloudShellApp(
                         )
                     }
 
-                    // 2. TOMBOL OTOMATIS: RECONNECT PINGGY (Ctrl+C dulu lalu ssh connect)
+                    // Tombol Otomatis Reconnect Pinggy
                     Button(
                         onClick = {
-                            // Batalkan sesi gantung dengan ^C lalu sambung ulang
                             manager.sendTerminalKey(KeyEvent.KEYCODE_C, ctrl = true)
                             manager.runTerminalCommand("ssh -p 443 -R0:localhost:5901 -o StrictHostKeyChecking=no tcp@a.pinggy.io")
                             Toast.makeText(context, "Menyambungkan ulang Pinggy...", Toast.LENGTH_SHORT).show()
@@ -413,7 +411,7 @@ fun CloudShellApp(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .imePadding() // Nangkring persis di atas keyboard HP
+                        .imePadding()
                         .border(1.dp, TerminalBorder),
                     color = TerminalSurface
                 ) {
@@ -425,6 +423,7 @@ fun CloudShellApp(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // 1. PASTE: Langsung mengetikkan isi clipboard HP ke terminal
                         TerminalKeyButton(label = "PASTE", activeColor = TerminalGreen) {
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                             val text = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: ""
@@ -436,18 +435,22 @@ fun CloudShellApp(
                             }
                         }
 
+                        // 2. COPY: Salin teks yang diblok di layar terminal ke HP
                         TerminalKeyButton(label = "COPY", activeColor = TerminalBlue) {
                             manager.copySelectedText()
                         }
 
+                        // 3. Tombol ESC
                         TerminalKeyButton(label = "ESC") {
                             manager.sendTerminalKey(KeyEvent.KEYCODE_ESCAPE)
                         }
 
+                        // 4. Tombol TAB (Auto-Complete)
                         TerminalKeyButton(label = "TAB") {
                             manager.sendTerminalKey(KeyEvent.KEYCODE_TAB)
                         }
 
+                        // 5. Tombol Panah (Bekerja Tepat 1 Kali Respon!)
                         TerminalKeyButton(label = "▲") {
                             manager.sendTerminalKey(KeyEvent.KEYCODE_DPAD_UP)
                         }
@@ -461,14 +464,17 @@ fun CloudShellApp(
                             manager.sendTerminalKey(KeyEvent.KEYCODE_DPAD_RIGHT)
                         }
 
+                        // 6. Tombol Batal / Stop (^C)
                         TerminalKeyButton(label = "^C", activeColor = TerminalRed) {
                             manager.sendTerminalKey(KeyEvent.KEYCODE_C, ctrl = true)
                         }
 
+                        // 7. Tombol Clear Layar (^L)
                         TerminalKeyButton(label = "^L", activeColor = TerminalYellow) {
                             manager.sendTerminalKey(KeyEvent.KEYCODE_L, ctrl = true)
                         }
 
+                        // 8. Tombol Enter
                         TerminalKeyButton(label = "ENTER", activeColor = TerminalGreen) {
                             manager.sendTerminalKey(KeyEvent.KEYCODE_ENTER)
                         }
