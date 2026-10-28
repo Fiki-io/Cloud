@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.SystemClock
+import android.view.KeyCharacterMap
 import android.view.KeyEvent
 import android.widget.Toast
 import com.example.R
@@ -25,7 +26,9 @@ import org.mozilla.geckoview.GeckoRuntimeSettings
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
+import org.mozilla.geckoview.WebExtension
 import java.lang.ref.WeakReference
+import java.util.Collections
 import kotlin.random.Random
 
 class CloudShellManager(context: Context) {
@@ -34,14 +37,14 @@ class CloudShellManager(context: Context) {
     private val scope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private var heartbeatJob: Job? = null
     private var commandJob: Job? = null
-    private var injectJob: Job? = null
+    private var copyTimeoutJob: Job? = null
     private var lastKeyTime = 0L
 
     @Volatile
-    private var pendingCommandText: String? = null
+    private var waitingForCopyScan = false
 
-    @Volatile
-    private var pendingCommandAppendEnter: Boolean = false
+    private val activePorts: MutableSet<WebExtension.Port> =
+        Collections.synchronizedSet( LinkedHashSet() )
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -64,11 +67,37 @@ class CloudShellManager(context: Context) {
     val runtime: GeckoRuntime
         get() = getOrCreateRuntime(appContext)
 
+    private val webExtensionMessageDelegate = object : WebExtension.MessageDelegate {
+        override fun onMessage(
+            nativeApp: String,
+            message: Any,
+            sender: WebExtension.MessageSender
+        ): GeckoResult<Any>? {
+            handleExtensionMessage(message)
+            return null
+        }
+
+        override fun onConnect(port: WebExtension.Port) {
+            activePorts.add(port)
+            port.setDelegate(object : WebExtension.PortDelegate {
+                override fun onPortMessage(message: Any, p: WebExtension.Port) {
+                    handleExtensionMessage(message)
+                }
+
+                override fun onDisconnect(p: WebExtension.Port) {
+                    activePorts.remove(p)
+                }
+            })
+        }
+    }
+
     val session: GeckoSession by lazy {
+        // VIEWPORT_MODE_DESKTOP + USER_AGENT_MODE_DESKTOP memastikan tampilan Google Cloud Shell
+        // adalah tampilan Desktop penuh (bukan tampilan mobile)
         val settings = GeckoSessionSettings.Builder()
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
             .userAgentOverride(AppConstants.DESKTOP_UA)
-            .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_MOBILE)
+            .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
             .suspendMediaWhenInactive(true)
             .build()
 
@@ -79,12 +108,85 @@ class CloudShellManager(context: Context) {
             promptDelegate = createPromptDelegate()
             progressDelegate = createProgressDelegate()
             open(runtime)
+            registerWebExtensionBridge(this)
             loadUri(AppConstants.CLOUD_SHELL_URL)
         }
     }
 
     init {
         startHeartbeat()
+    }
+
+    private fun registerWebExtensionBridge(targetSession: GeckoSession) {
+        runtime.webExtensionController
+            .ensureBuiltIn(AppConstants.WEB_EXT_URI, AppConstants.WEB_EXT_ID)
+            .accept(
+                { ext ->
+                    if (ext != null) {
+                        ext.setMessageDelegate(
+                            webExtensionMessageDelegate,
+                            AppConstants.WEB_EXT_NATIVE_APP
+                        )
+                        targetSession.webExtensionController.setMessageDelegate(
+                            ext,
+                            webExtensionMessageDelegate,
+                            AppConstants.WEB_EXT_NATIVE_APP
+                        )
+                    }
+                },
+                { _ -> }
+            )
+    }
+
+    private fun handleExtensionMessage(message: Any) {
+        val json = message as? JSONObject ?: return
+        val type = json.optString("type", "")
+        when (type) {
+            "pinggy" -> {
+                val url = json.optString("url", "")
+                val extracted = PinggyUrlExtractor.extractLatestPinggyUrl(url)
+                if (!extracted.isNullOrBlank()) {
+                    _lastPinggyUrl.value = extracted
+                    if (waitingForCopyScan) {
+                        waitingForCopyScan = false
+                        copyTimeoutJob?.cancel()
+                        scope.launch {
+                            deliverCopyToClipboard(extracted, isPinggy = true)
+                        }
+                    }
+                }
+            }
+            "scan_result" -> {
+                val pinggy = json.optString("pinggy", "")
+                val selection = json.optString("selection", "")
+                val raw = json.optString("raw", "")
+
+                val resolvedPinggy = PinggyUrlExtractor.extractLatestPinggyUrl(pinggy)
+                    ?: PinggyUrlExtractor.extractLatestPinggyUrl(selection)
+                    ?: PinggyUrlExtractor.extractLatestPinggyUrl(raw)
+
+                if (!resolvedPinggy.isNullOrBlank()) {
+                    _lastPinggyUrl.value = resolvedPinggy
+                }
+
+                if (waitingForCopyScan) {
+                    val targetPinggy = resolvedPinggy ?: _lastPinggyUrl.value
+                    if (!targetPinggy.isNullOrBlank()) {
+                        waitingForCopyScan = false
+                        copyTimeoutJob?.cancel()
+                        scope.launch {
+                            deliverCopyToClipboard(targetPinggy, isPinggy = true)
+                        }
+                    } else if (selection.isNotBlank()) {
+                        waitingForCopyScan = false
+                        copyTimeoutJob?.cancel()
+                        scope.launch {
+                            deliverCopyToClipboard(selection, isPinggy = false)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fun attachGeckoView(view: GeckoView) {
@@ -116,202 +218,166 @@ class CloudShellManager(context: Context) {
         val upEvent = KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0, metaState)
 
         view.post {
-            view.requestFocus()
             view.dispatchKeyEvent(downEvent)
             view.dispatchKeyEvent(upEvent)
         }
     }
 
-    fun sendTextInstant(text: String, appendEnter: Boolean = false) {
-        if (text.isEmpty()) return
-        val payload = if (appendEnter) "$text\r" else text
-        pendingCommandText = text
-        pendingCommandAppendEnter = appendEnter
-
-        val escapedJson = JSONObject.quote(payload)
-        val script = "javascript:(function(){" +
-            "try{" +
-            "var txt=$escapedJson;" +
-            "function findTa(w){" +
-            "try{" +
-            "var d=w.document;" +
-            "var el=d.querySelector('textarea.xterm-helper-textarea')||d.querySelector('.xterm textarea')||d.querySelector('textarea');" +
-            "if(el)return {d:d,el:el};" +
-            "for(var i=0;i<w.frames.length;i++){var r=findTa(w.frames[i]);if(r)return r;}" +
-            "}catch(e){}" +
-            "return null;" +
-            "}" +
-            "var t=findTa(window);" +
-            "if(t&&t.el){" +
-            "t.el.focus({preventScroll:true});" +
-            "var ok=false;" +
-            "try{" +
-            "var dt=new DataTransfer();" +
-            "dt.setData('text/plain',txt);" +
-            "var pe=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true});" +
-            "t.el.dispatchEvent(pe);" +
-            "ok=true;" +
-            "}catch(e1){ok=false;}" +
-            "if(!ok){ok=t.d.execCommand('insertText',false,txt);}" +
-            "window.prompt('${AppConstants.BRIDGE_CMD_STATUS}',ok?'${AppConstants.BRIDGE_STATUS_OK}':'${AppConstants.BRIDGE_STATUS_FALLBACK}');" +
-            "return;" +
-            "}" +
-            "}catch(e){}" +
-            "window.prompt('${AppConstants.BRIDGE_CMD_STATUS}','${AppConstants.BRIDGE_STATUS_FALLBACK}');" +
-            "})();void(0);"
-
-        session.loadUri(script)
+    private fun focusTerminalInFrames() {
+        val view = geckoViewRef?.get()
+        view?.post {
+            view.requestFocus()
+        }
+        val portsSnapshot = synchronized(activePorts) { activePorts.toList() }
+        if (portsSnapshot.isEmpty()) return
+        val req = JSONObject().put("action", "focus_terminal")
+        for (port in portsSnapshot) {
+            try {
+                port.postMessage(req)
+            } catch (_: Exception) {
+            }
+        }
     }
 
-    private fun executeNativePasteFallback(text: String, appendEnter: Boolean) {
+    /**
+     * Mengirimkan teks langsung melalui Hardware KeyCharacterMap ke GeckoView.
+     * Metode ini 100% tembus ke terminal xterm.js di dalam iframe Cloud Shell tanpa diblokir CSP.
+     */
+    fun sendText(text: String) {
+        if (text.isEmpty()) return
         val view = geckoViewRef?.get() ?: return
-        val clipboard = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val previousClip: ClipData? = try {
-            clipboard.primaryClip
-        } catch (_: Exception) {
-            null
-        }
+        val charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+        val events = charMap.getEvents(text.toCharArray())
 
-        scope.launch {
-            try {
-                clipboard.setPrimaryClip(ClipData.newPlainText(AppConstants.CLIPBOARD_LABEL, text))
+        if (events != null && events.isNotEmpty()) {
+            view.post {
                 view.requestFocus()
-                sendNativeKeyEvent(KeyEvent.KEYCODE_PASTE, bypassDebounce = true)
-
-                if (appendEnter) {
-                    delay(AppConstants.NATIVE_PASTE_ENTER_DELAY_MS)
-                    sendNativeKeyEvent(KeyEvent.KEYCODE_ENTER, bypassDebounce = true)
+                for (event in events) {
+                    view.dispatchKeyEvent(event)
                 }
-
-                delay(AppConstants.CLIPBOARD_RESTORE_DELAY_MS)
-                if (previousClip != null && previousClip.itemCount > 0) {
-                    val prevText = previousClip.getItemAt(0)?.text?.toString()
-                    if (!prevText.isNullOrEmpty() && prevText != text) {
-                        clipboard.setPrimaryClip(previousClip)
-                    }
-                }
-            } catch (_: Exception) {
             }
         }
     }
 
     fun pasteText(text: String) {
-        sendTextInstant(text, appendEnter = false)
+        sendText(text)
+    }
+
+    private suspend fun typeCommandToTerminal(command: String) {
+        val view = geckoViewRef?.get() ?: return
+        focusTerminalInFrames()
+        delay(20L)
+
+        val charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+        val chunkSize = 8
+        var i = 0
+        while (i < command.length) {
+            val end = (i + chunkSize).coerceAtMost(command.length)
+            val sub = command.substring(i, end).toCharArray()
+            val events = charMap.getEvents(sub)
+            if (events != null && events.isNotEmpty()) {
+                view.post {
+                    for (ev in events) {
+                        view.dispatchKeyEvent(ev)
+                    }
+                }
+            }
+            i = end
+            delay(12L)
+        }
+        delay(25L)
+        sendNativeKeyEvent(KeyEvent.KEYCODE_ENTER, bypassDebounce = true)
     }
 
     fun runTerminalCommand(command: String) {
-        sendTextInstant(command, appendEnter = true)
+        commandJob?.cancel()
+        commandJob = scope.launch {
+            typeCommandToTerminal(command)
+        }
     }
 
     fun reconnectPinggyInstant() {
         commandJob?.cancel()
         commandJob = scope.launch {
+            focusTerminalInFrames()
             sendNativeKeyEvent(KeyEvent.KEYCODE_C, ctrl = true, bypassDebounce = true)
             delay(AppConstants.CTRL_C_SETTLE_DELAY_MS)
-            sendTextInstant(AppConstants.CMD_PINGGY_SSH, appendEnter = true)
+            typeCommandToTerminal(AppConstants.CMD_PINGGY_SSH)
         }
     }
 
     fun copyPinggyOrSelectedText() {
-        val script = "javascript:(function(){" +
-            "try{" +
-            "var found=window.__csLastPinggy||'';" +
-            "function collectText(w){" +
-            "var acc='';" +
-            "try{" +
-            "var d=w.document;" +
-            "if(w.__csLastPinggy&&!found){found=w.__csLastPinggy;}" +
-            "if(w.__csStreamTail){acc+='\\n'+w.__csStreamTail;}" +
-            "var rows=d.querySelectorAll('.xterm-rows, .xterm-accessibility, .xterm-screen');" +
-            "for(var r=0;r<rows.length;r++){acc+='\\n'+(rows[r].innerText||rows[r].textContent||'');}" +
-            "if(d.body){acc+='\\n'+(d.body.innerText||'');}" +
-            "for(var i=0;i<w.frames.length;i++){acc+='\\n'+collectText(w.frames[i]);}" +
-            "}catch(e){}" +
-            "return acc;" +
-            "}" +
-            "function collectSelection(w){" +
-            "try{" +
-            "var s=w.getSelection?w.getSelection().toString().trim():'';" +
-            "if(s)return s;" +
-            "for(var i=0;i<w.frames.length;i++){var fs=collectSelection(w.frames[i]);if(fs)return fs;}" +
-            "}catch(e){}" +
-            "return '';" +
-            "}" +
-            "var sel=collectSelection(window);" +
-            "var raw=collectText(window);" +
-            "var payload=JSON.stringify({sel:sel,cached:found,raw:raw.slice(-12000)});" +
-            "window.prompt('${AppConstants.BRIDGE_COPY_RESULT}',payload);" +
-            "}catch(e){" +
-            "window.prompt('${AppConstants.BRIDGE_COPY_RESULT}','');" +
-            "}" +
-            "})();void(0);"
+        val cached = _lastPinggyUrl.value
+        if (!cached.isNullOrBlank()) {
+            // Jika link Pinggy sudah tertangkap otomatis dari stream terminal, langsung salin detik itu juga!
+            deliverCopyToClipboard(cached, isPinggy = true)
+            // Tetap minta scan di background untuk berjaga-jaga ada link yang lebih baru
+            requestFramesScan(silent = true)
+            return
+        }
 
-        session.loadUri(script)
+        requestFramesScan(silent = false)
     }
 
-    private fun handleCopyResultPayload(payload: String) {
-        var selectedText = ""
-        var cachedPinggy = ""
-        var rawTerminalText = ""
+    private fun requestFramesScan(silent: Boolean) {
+        val portsSnapshot = synchronized(activePorts) { activePorts.toList() }
+        if (portsSnapshot.isEmpty()) {
+            if (!silent) {
+                Toast.makeText(
+                    appContext,
+                    appContext.getString(R.string.toast_copy_empty),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            return
+        }
 
-        if (payload.isNotBlank()) {
+        if (!silent) {
+            waitingForCopyScan = true
+            copyTimeoutJob?.cancel()
+            copyTimeoutJob = scope.launch {
+                delay(AppConstants.COPY_SCAN_TIMEOUT_MS)
+                if (waitingForCopyScan) {
+                    waitingForCopyScan = false
+                    val fallbackUrl = _lastPinggyUrl.value
+                    if (!fallbackUrl.isNullOrBlank()) {
+                        deliverCopyToClipboard(fallbackUrl, isPinggy = true)
+                    } else {
+                        Toast.makeText(
+                            appContext,
+                            appContext.getString(R.string.toast_copy_empty),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        }
+
+        val req = JSONObject().put("action", "scan_copy")
+        for (port in portsSnapshot) {
             try {
-                val json = JSONObject(payload)
-                selectedText = json.optString("sel", "").trim()
-                cachedPinggy = json.optString("cached", "").trim()
-                rawTerminalText = json.optString("raw", "")
+                port.postMessage(req)
             } catch (_: Exception) {
-                rawTerminalText = payload
             }
         }
+    }
 
-        val pinggyFromSelection = PinggyUrlExtractor.extractLatestPinggyUrl(selectedText)
-        val pinggyFromRaw = PinggyUrlExtractor.extractLatestPinggyUrl(rawTerminalText)
-        val pinggyFromCache = PinggyUrlExtractor.extractLatestPinggyUrl(cachedPinggy) ?: _lastPinggyUrl.value
-
-        val resolvedPinggy = pinggyFromSelection ?: pinggyFromRaw ?: pinggyFromCache
-        if (!resolvedPinggy.isNullOrBlank()) {
-            _lastPinggyUrl.value = resolvedPinggy
-            val verified = copyToSystemClipboardVerified(resolvedPinggy)
-            if (verified) {
-                Toast.makeText(
-                    appContext,
-                    appContext.getString(R.string.toast_pinggy_copied, resolvedPinggy),
-                    Toast.LENGTH_SHORT
-                ).show()
+    private fun deliverCopyToClipboard(text: String, isPinggy: Boolean) {
+        val verified = copyToSystemClipboardVerified(text)
+        if (verified) {
+            val msg = if (isPinggy) {
+                appContext.getString(R.string.toast_pinggy_copied, text)
             } else {
-                Toast.makeText(
-                    appContext,
-                    appContext.getString(R.string.toast_clipboard_verify_failed),
-                    Toast.LENGTH_SHORT
-                ).show()
+                appContext.getString(R.string.toast_text_copied)
             }
-            return
+            Toast.makeText(appContext, msg, Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(
+                appContext,
+                appContext.getString(R.string.toast_clipboard_verify_failed),
+                Toast.LENGTH_SHORT
+            ).show()
         }
-
-        if (selectedText.isNotEmpty()) {
-            val verified = copyToSystemClipboardVerified(selectedText)
-            if (verified) {
-                Toast.makeText(
-                    appContext,
-                    appContext.getString(R.string.toast_text_copied),
-                    Toast.LENGTH_SHORT
-                ).show()
-            } else {
-                Toast.makeText(
-                    appContext,
-                    appContext.getString(R.string.toast_clipboard_verify_failed),
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-            return
-        }
-
-        Toast.makeText(
-            appContext,
-            appContext.getString(R.string.toast_copy_empty),
-            Toast.LENGTH_SHORT
-        ).show()
     }
 
     private fun copyToSystemClipboardVerified(text: String): Boolean {
@@ -348,83 +414,6 @@ class CloudShellManager(context: Context) {
             heartbeatJob?.cancel()
             heartbeatJob = null
         }
-    }
-
-    fun injectTerminalOptimizationsAndStreamHook() {
-        val script = "javascript:(function(){" +
-            "try{" +
-            "function installInWindow(w){" +
-            "try{" +
-            "var d=w.document;" +
-            "if(d&&d.head){" +
-            "var mvs=d.querySelectorAll('meta[name=viewport]');" +
-            "var mv=mvs.length>0?mvs[0]:null;" +
-            "for(var k=1;k<mvs.length;k++){mvs[k].remove();}" +
-            "if(!mv){mv=d.createElement('meta');mv.name='viewport';d.head.appendChild(mv);}" +
-            "var targetVp='width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no';" +
-            "if(mv.content!==targetVp){mv.content=targetVp;}" +
-            "if(!d.getElementById('__cs_style')){" +
-            "var st=d.createElement('style');st.id='__cs_style';" +
-            "st.textContent='html, body { max-width: 100vw !important; overflow-x: hidden !important; -webkit-text-size-adjust: 100% !important; text-size-adjust: 100% !important; touch-action: pan-x pan-y !important; } *, .xterm, .xterm-rows, .xterm-screen { -webkit-user-select: text !important; user-select: text !important; } input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; }';" +
-            "d.head.appendChild(st);" +
-            "}" +
-            "}" +
-            "if(!w.__csHookInstalled){" +
-            "w.__csHookInstalled=true;" +
-            "w.__csStreamTail='';" +
-            "w.__csLastPinggy='';" +
-            "function inspectChunk(str){" +
-            "if(typeof str!=='string'||str.length===0)return;" +
-            "w.__csStreamTail=(w.__csStreamTail+str).slice(-3072);" +
-            "if(w.__csStreamTail.indexOf('pinggy.')!==-1){" +
-            "var clean=w.__csStreamTail.replace(/\\x1b\\[[0-9;?]*[a-zA-Z]/g,'');" +
-            "var m=clean.match(/tcp:\\/\\/[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy\\.(?:link|io):\\d+/gi)" +
-            "||clean.match(/(?:tcp|https?):\\/\\/[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy\\.(?:link|io)(?::\\d+)?/gi);" +
-            "if(m&&m.length>0){" +
-            "var candidate=m[m.length-1];" +
-            "if(candidate.indexOf('@')===-1&&candidate!==w.__csLastPinggy){" +
-            "w.__csLastPinggy=candidate;" +
-            "window.__csLastPinggy=candidate;" +
-            "window.prompt('${AppConstants.BRIDGE_PINGGY_AUTO}',candidate);" +
-            "}" +
-            "}" +
-            "}" +
-            "}" +
-            "if(w.TextDecoder&&w.TextDecoder.prototype){" +
-            "var origDecode=w.TextDecoder.prototype.decode;" +
-            "w.TextDecoder.prototype.decode=function(){" +
-            "var res=origDecode.apply(this,arguments);" +
-            "try{if(res&&(res.indexOf('pinggy')!==-1||w.__csStreamTail.indexOf('pinggy')!==-1)){inspectChunk(res);}" +
-            "else if(res&&res.length<512){w.__csStreamTail=(w.__csStreamTail+res).slice(-3072);}" +
-            "}catch(e){}" +
-            "return res;" +
-            "};" +
-            "}" +
-            "if(w.MessageEvent&&w.MessageEvent.prototype){" +
-            "var desc=Object.getOwnPropertyDescriptor(w.MessageEvent.prototype,'data');" +
-            "if(desc&&desc.get){" +
-            "Object.defineProperty(w.MessageEvent.prototype,'data',{" +
-            "get:function(){" +
-            "var val=desc.get.call(this);" +
-            "try{if(typeof val==='string'&&(val.indexOf('pinggy')!==-1||val.length<512)){inspectChunk(val);}}catch(e){}" +
-            "return val;" +
-            "}," +
-            "configurable:true" +
-            "});" +
-            "}" +
-            "}" +
-            "Object.defineProperty(d,'hidden',{get:function(){return false;},configurable:true});" +
-            "Object.defineProperty(d,'visibilityState',{get:function(){return 'visible';},configurable:true});" +
-            "w.addEventListener('visibilitychange',function(e){e.stopImmediatePropagation();},true);" +
-            "}" +
-            "for(var i=0;i<w.frames.length;i++){installInWindow(w.frames[i]);}" +
-            "}catch(e){}" +
-            "}" +
-            "installInWindow(window);" +
-            "}catch(e){}" +
-            "})();void(0);"
-
-        session.loadUri(script)
     }
 
     private fun startHeartbeat() {
@@ -563,40 +552,10 @@ class CloudShellManager(context: Context) {
                 prompt.confirm(GeckoSession.PromptDelegate.ButtonPrompt.Type.POSITIVE)
             )
         }
-
-        override fun onTextPrompt(
-            session: GeckoSession,
-            prompt: GeckoSession.PromptDelegate.TextPrompt
-        ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse> {
-            val message = prompt.message ?: ""
-            val defaultValue = prompt.defaultValue ?: ""
-
-            when (message) {
-                AppConstants.BRIDGE_CMD_STATUS -> {
-                    val cmd = pendingCommandText
-                    val appendEnter = pendingCommandAppendEnter
-                    pendingCommandText = null
-                    if (defaultValue != AppConstants.BRIDGE_STATUS_OK && !cmd.isNullOrEmpty()) {
-                        executeNativePasteFallback(cmd, appendEnter)
-                    }
-                }
-                AppConstants.BRIDGE_COPY_RESULT -> {
-                    handleCopyResultPayload(defaultValue)
-                }
-                AppConstants.BRIDGE_PINGGY_AUTO -> {
-                    val extracted = PinggyUrlExtractor.extractLatestPinggyUrl(defaultValue)
-                    if (!extracted.isNullOrBlank()) {
-                        _lastPinggyUrl.value = extracted
-                    }
-                }
-            }
-            return GeckoResult.fromValue(prompt.dismiss())
-        }
     }
 
     private fun createProgressDelegate() = object : GeckoSession.ProgressDelegate {
         override fun onPageStart(session: GeckoSession, url: String) {
-            injectJob?.cancel()
             _isLoading.value = true
             _progress.value = 10
         }
@@ -604,15 +563,6 @@ class CloudShellManager(context: Context) {
         override fun onPageStop(session: GeckoSession, success: Boolean) {
             _isLoading.value = false
             _progress.value = 100
-            if (success) {
-                // Tunggu jeda singkat setelah halaman selesai dimuat agar tidak pernah memotong
-                // rantai redirect OAuth Google (shell.cloud.google.com -> accounts.google.com)
-                injectJob?.cancel()
-                injectJob = scope.launch {
-                    delay(AppConstants.PAGE_STOP_INJECT_DELAY_MS)
-                    injectTerminalOptimizationsAndStreamHook()
-                }
-            }
         }
 
         override fun onProgressChange(session: GeckoSession, newProgress: Int) {
@@ -621,9 +571,10 @@ class CloudShellManager(context: Context) {
     }
 
     fun destroy() {
-        injectJob?.cancel()
+        copyTimeoutJob?.cancel()
         commandJob?.cancel()
         heartbeatJob?.cancel()
+        activePorts.clear()
         popupSession?.close()
         popupSession = null
         session.close()
@@ -639,7 +590,8 @@ class CloudShellManager(context: Context) {
                     val runtimeSettings = GeckoRuntimeSettings.Builder()
                         .webManifest(false)
                         .extensionsProcessEnabled(false)
-                        .extensionsWebAPIEnabled(false)
+                        // Aktifkan WebAPI khusus untuk built-in WebExtension internal kita
+                        .extensionsWebAPIEnabled(true)
                         .consoleOutput(false)
                         .debugLogging(false)
                         .aboutConfigEnabled(false)
