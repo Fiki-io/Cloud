@@ -12,8 +12,11 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
+import com.example.R
+import com.example.data.AppConstants
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,27 +27,25 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class KeepAliveService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private var timerJob: Job? = null
+    private var notificationUpdateJob: Job? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
     companion object {
-        const val CHANNEL_ID = "cloud_shell_keepalive_channel"
-        const val NOTIFICATION_ID = 1001
-
-        const val ACTION_START = "com.example.cloudshell.START_SERVICE"
-        const val ACTION_STOP = "com.example.cloudshell.STOP_SERVICE"
+        const val ACTION_START = AppConstants.ACTION_START_SERVICE
+        const val ACTION_STOP = AppConstants.ACTION_STOP_SERVICE
 
         private val _isRunning = MutableStateFlow(false)
         val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
-        private val _elapsedSeconds = MutableStateFlow(0L)
-        val elapsedSeconds: StateFlow<Long> = _elapsedSeconds.asStateFlow()
+        private val _startElapsedRealtime = MutableStateFlow(0L)
+        val startElapsedRealtime: StateFlow<Long> = _startElapsedRealtime.asStateFlow()
 
         private val _lastHeartbeat = MutableStateFlow(0L)
         val lastHeartbeat: StateFlow<Long> = _lastHeartbeat.asStateFlow()
@@ -56,12 +57,19 @@ class KeepAliveService : Service() {
             _lastHeartbeat.value = System.currentTimeMillis()
             _heartbeatCount.value += 1
         }
+
+        fun formatDuration(seconds: Long): String {
+            val hrs = seconds / 3600
+            val mins = (seconds % 3600) / 60
+            val secs = seconds % 60
+            return String.format(Locale.US, "%02d:%02d:%02d", hrs, mins, secs)
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForegroundSafely("Sesi Dimulai...")
+        startForegroundSafely(getString(R.string.notif_status_starting))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -72,7 +80,7 @@ class KeepAliveService : Service() {
         }
 
         acquireLocks()
-        startTimer()
+        startNotificationUpdater()
 
         return START_STICKY
     }
@@ -82,16 +90,15 @@ class KeepAliveService : Service() {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
-                    NOTIFICATION_ID,
+                    AppConstants.SERVICE_NOTIFICATION_ID,
                     notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 )
             } else {
-                startForeground(NOTIFICATION_ID, notification)
+                startForeground(AppConstants.SERVICE_NOTIFICATION_ID, notification)
             }
             _isRunning.value = true
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
         }
     }
 
@@ -101,44 +108,51 @@ class KeepAliveService : Service() {
                 val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
                 wakeLock = powerManager.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK,
-                    "CloudShell:KeepAliveWakeLock"
+                    AppConstants.WAKELOCK_TAG
                 ).apply {
                     setReferenceCounted(false)
-                    acquire(4 * 60 * 60 * 1000L) // 4 jam pengaman
+                    acquire(AppConstants.WAKELOCK_TIMEOUT_MS)
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (_: Exception) {
             }
         }
 
         if (wifiLock == null || wifiLock?.isHeld == false) {
             try {
                 val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                @Suppress("DEPRECATION")
+                val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
                 wifiLock = wifiManager.createWifiLock(
-                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                    "CloudShell:WifiLock"
+                    lockMode,
+                    AppConstants.WIFILOCK_TAG
                 ).apply {
                     setReferenceCounted(false)
                     acquire()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (_: Exception) {
             }
         }
     }
 
-    private fun startTimer() {
-        timerJob?.cancel()
-        _elapsedSeconds.value = 0L
-        timerJob = serviceScope.launch {
+    private fun startNotificationUpdater() {
+        if (_startElapsedRealtime.value == 0L) {
+            _startElapsedRealtime.value = SystemClock.elapsedRealtime()
+        }
+        notificationUpdateJob?.cancel()
+        notificationUpdateJob = serviceScope.launch {
             while (true) {
-                delay(1000L)
-                _elapsedSeconds.value += 1
-                if (_elapsedSeconds.value % 60 == 0L) {
-                    val formatted = formatDuration(_elapsedSeconds.value)
+                delay(AppConstants.NOTIFICATION_UPDATE_INTERVAL_MS)
+                val startRealtime = _startElapsedRealtime.value
+                if (startRealtime > 0L) {
+                    val elapsedSec = ((SystemClock.elapsedRealtime() - startRealtime) / 1000L).coerceAtLeast(0L)
+                    val formatted = formatDuration(elapsedSec)
+                    val statusText = getString(R.string.notif_status_active, formatted)
                     val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-                    manager.notify(NOTIFICATION_ID, buildNotification("Sesi Aktif: $formatted"))
+                    manager.notify(AppConstants.SERVICE_NOTIFICATION_ID, buildNotification(statusText))
                 }
             }
         }
@@ -165,13 +179,18 @@ class KeepAliveService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Cloud Shell Anti-Stop")
-            .setContentText("$statusText (Koneksi terjaga di latar belakang)")
+        return NotificationCompat.Builder(this, AppConstants.SERVICE_CHANNEL_ID)
+            .setContentTitle(getString(R.string.notif_title))
+            .setContentText(getString(R.string.notif_content_suffix, statusText))
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(pendingOpenIntent)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop Sesi", pendingStopIntent)
+            .addAction(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.notif_action_stop),
+                pendingStopIntent
+            )
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
@@ -180,11 +199,11 @@ class KeepAliveService : Service() {
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Cloud Shell Keep-Alive",
+                AppConstants.SERVICE_CHANNEL_ID,
+                getString(R.string.notif_channel_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Notifikasi status penjaga koneksi Cloud Shell aktif"
+                description = getString(R.string.notif_channel_desc)
                 setShowBadge(false)
             }
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -192,33 +211,24 @@ class KeepAliveService : Service() {
         }
     }
 
-    private fun formatDuration(seconds: Long): String {
-        val hrs = seconds / 3600
-        val mins = (seconds % 3600) / 60
-        val secs = seconds % 60
-        return String.format("%02d:%02d:%02d", hrs, mins, secs)
-    }
-
     override fun onDestroy() {
-        timerJob?.cancel()
+        notificationUpdateJob?.cancel()
         serviceScope.cancel()
         _isRunning.value = false
-        _elapsedSeconds.value = 0L
+        _startElapsedRealtime.value = 0L
 
         try {
             if (wakeLock?.isHeld == true) {
                 wakeLock?.release()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
         }
 
         try {
             if (wifiLock?.isHeld == true) {
                 wifiLock?.release()
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
         }
 
         super.onDestroy()

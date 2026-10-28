@@ -2,18 +2,28 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-val TerminalBg = Color(0xFF181A1F)
-val TerminalSurface = Color(0xFF21252B)
-val TerminalSurfaceLight = Color(0xFF282C34)
-val TerminalBorder = Color(0xFF3E4451)
+val BgPrimary = Color(0xFF121212)
+val BgTopGradient = Color(0xFF2E2E2E)
+val SurfaceCard = Color(0xFF242424)
+val SurfaceInteractive = Color(0xFF2E2E2E)
+val SurfaceTranslucent = Color(0x12FFFFFF)
+val BorderSubtle = Color(0x1AFFFFFF)
+val BorderActive = Color(0x4D0A78D2)
 
-val TerminalGreen = Color(0xFF4CAF50)
-val TerminalGreenDim = Color(0xFF2E7D32)
-val TerminalRed = Color(0xFFE06C75)
-val TerminalRedDim = Color(0xFF8B252B)
-val TerminalBlue = Color(0xFF61AFEF)
-val TerminalYellow = Color(0xFFE5C07B)
+val AccentPrimary = Color(0xFF0A78D2)
+val AccentSurface = Color(0x260A78D2)
 
-val TextPrimary = Color(0xFFABB2BF)
-val TextLight = Color(0xFFFFFFFF)
-val TextMuted = Color(0xFF5C6370)
+val TextPrimary = Color(0xFFF2F2F2)
+val TextSecondary = Color(0xFF9A9A9A)
+
+// Alias kompatibilitas internal
+val TerminalBg = BgPrimary
+val TerminalSurface = SurfaceCard
+val TerminalSurfaceLight = SurfaceInteractive
+val TerminalBorder = BorderSubtle
+val TerminalGreen = AccentPrimary
+val TerminalBlue = AccentPrimary
+val TerminalYellow = SurfaceInteractive
+val TerminalRed = SurfaceInteractive
+val TextLight = TextPrimary
+val TextMuted = TextSecondary

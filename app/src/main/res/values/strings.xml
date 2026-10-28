@@ -1,3 +1,46 @@
 <resources>
     <string name="app_name">Cloud Shell</string>
+    <string name="terminal_prompt_prefix">&gt;_</string>
+    <string name="status_standby">STANDBY</string>
+    <string name="action_start_session">MULAI SESI</string>
+    <string name="action_stop_session">STOP SESI</string>
+    <string name="action_run_start_script">START</string>
+    <string name="action_reconnect_pinggy">PINGGY</string>
+    <string name="action_copy_pinggy">COPY LINK</string>
+    <string name="action_desktop_mode">Desktop</string>
+    <string name="action_mobile_mode">Mobile</string>
+    <string name="action_reload">Reload</string>
+    <string name="action_home">Home</string>
+    <string name="status_anti_stop_on">Keep-Alive (%1$d)</string>
+    <string name="status_anti_stop_off">Keep-Alive: Off</string>
+
+    <string name="key_paste">PASTE</string>
+    <string name="key_copy">COPY</string>
+    <string name="key_esc">ESC</string>
+    <string name="key_tab">TAB</string>
+    <string name="key_up">UP</string>
+    <string name="key_down">DOWN</string>
+    <string name="key_left">LEFT</string>
+    <string name="key_right">RIGHT</string>
+    <string name="key_ctrl_c">^C</string>
+    <string name="key_ctrl_l">^L</string>
+    <string name="key_enter">ENTER</string>
+
+    <string name="toast_notification_permission_needed">Izin notifikasi diperlukan agar sesi tetap terjaga di latar belakang</string>
+    <string name="toast_running_start_script">Menjalankan ./start.sh</string>
+    <string name="toast_reconnecting_pinggy">Menyambungkan ulang Pinggy</string>
+    <string name="toast_pasted_to_terminal">Teks ditempel ke terminal</string>
+    <string name="toast_clipboard_empty">Papan klip perangkat kosong</string>
+    <string name="toast_pinggy_copied">Link Pinggy disalin: %1$s</string>
+    <string name="toast_text_copied">Teks disalin ke papan klip</string>
+    <string name="toast_copy_empty">Link Pinggy belum ditemukan di terminal</string>
+    <string name="toast_clipboard_verify_failed">Gagal memverifikasi penyalinan ke papan klip</string>
+
+    <string name="notif_channel_name">Penjaga Sesi Cloud Shell</string>
+    <string name="notif_channel_desc">Menjaga koneksi terminal tetap aktif di latar belakang</string>
+    <string name="notif_title">Cloud Shell Aktif</string>
+    <string name="notif_status_starting">Sesi dimulai</string>
+    <string name="notif_status_active">Durasi aktif: %1$s</string>
+    <string name="notif_content_suffix">%1$s (Koneksi terjaga di latar belakang)</string>
+    <string name="notif_action_stop">Stop Sesi</string>
 </resources>
