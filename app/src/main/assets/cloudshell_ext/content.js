@@ -2,26 +2,16 @@
   'use strict';
 
   var NATIVE_APP = 'cloudshell';
-  var streamTail = '';
   var lastPinggy = '';
   var port = null;
-  var utf8Decoder = typeof TextDecoder !== 'undefined' ? new TextDecoder('utf-8') : null;
 
-  function enforceDesktopViewport() {
-    if (window !== window.top) return;
+  function injectAntiZoomStyle() {
     try {
-      var head = document.head || document.documentElement;
-      if (!head) return;
-      var meta = document.querySelector('meta[name="viewport"]');
-      var desktopContent = 'width=1280, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-      if (!meta) {
-        meta = document.createElement('meta');
-        meta.name = 'viewport';
-        meta.content = desktopContent;
-        head.appendChild(meta);
-      } else if (meta.content !== desktopContent) {
-        meta.content = desktopContent;
-      }
+      if (!document.head || document.getElementById('cs-antizoom-style')) return;
+      var st = document.createElement('style');
+      st.id = 'cs-antizoom-style';
+      st.textContent = '*, .xterm, .xterm-rows, .xterm-screen { -webkit-user-select: text !important; user-select: text !important; } input, textarea, select, .xterm-helper-textarea { font-size: 16px !important; }';
+      document.head.appendChild(st);
     } catch (e) {}
   }
 
@@ -68,39 +58,13 @@
     } catch (e) {}
   }
 
-  function inspectTextChunk(chunk) {
-    if (typeof chunk !== 'string' || chunk.length === 0 || chunk.length > 65536) return;
-    streamTail = (streamTail + chunk).slice(-8192);
-    if (streamTail.toLowerCase().indexOf('pinggy.') !== -1) {
-      var found = extractPinggy(streamTail);
-      if (found) {
-        notifyPinggy(found);
-      }
-    }
-  }
-
-  function handleWsData(data) {
-    try {
-      if (typeof data === 'string') {
-        inspectTextChunk(data);
-      } else if (utf8Decoder && (data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
-        var decoded = utf8Decoder.decode(data, { stream: true });
-        if (decoded) inspectTextChunk(decoded);
-      } else if (typeof Blob !== 'undefined' && data instanceof Blob && typeof data.text === 'function') {
-        data.text().then(function(t) {
-          if (t) inspectTextChunk(t);
-        }).catch(function() {});
-      }
-    } catch (e) {}
-  }
-
   function scanDomForPinggyAndSelection() {
     var sel = '';
     try {
       sel = window.getSelection ? window.getSelection().toString().trim() : '';
     } catch (e) {}
 
-    var acc = streamTail;
+    var acc = '';
     try {
       var rows = document.querySelectorAll('.xterm-rows, .xterm-accessibility, .xterm-screen');
       for (var i = 0; i < rows.length; i++) {
@@ -138,88 +102,20 @@
     });
   } catch (e) {}
 
-  enforceDesktopViewport();
-  document.addEventListener('DOMContentLoaded', enforceDesktopViewport, { once: true });
+  injectAntiZoomStyle();
 
-  // Hook page-level APIs via wrappedJSObject (bypasses CSP completely in GeckoView)
-  try {
-    var pageWin = window.wrappedJSObject || window;
-
-    if (pageWin.WebSocket && pageWin.WebSocket.prototype) {
-      var origWsSend = pageWin.WebSocket.prototype.send;
-      var onWsMessage = function(ev) {
-        try {
-          if (ev && ev.data) {
-            handleWsData(ev.data);
+  setInterval(function() {
+    try {
+      var xtermRows = document.querySelector('.xterm-rows, .xterm-accessibility');
+      if (xtermRows) {
+        var text = xtermRows.innerText || xtermRows.textContent || '';
+        if (text && text.toLowerCase().indexOf('pinggy.') !== -1) {
+          var found = extractPinggy(text);
+          if (found) {
+            notifyPinggy(found);
           }
-        } catch (e) {}
-      };
-      var exportedOnWsMessage = typeof exportFunction === 'function'
-        ? exportFunction(onWsMessage, pageWin)
-        : onWsMessage;
-
-      var wrappedWsSend = function() {
-        try {
-          if (!this._csBridgeAttached && typeof this.addEventListener === 'function') {
-            this._csBridgeAttached = true;
-            this.addEventListener('message', exportedOnWsMessage);
-          }
-        } catch (e) {}
-        return origWsSend.apply(this, arguments);
-      };
-      if (typeof exportFunction === 'function') {
-        pageWin.WebSocket.prototype.send = exportFunction(wrappedWsSend, pageWin);
-      } else {
-        pageWin.WebSocket.prototype.send = wrappedWsSend;
+        }
       }
-    }
-
-    if (pageWin.TextDecoder && pageWin.TextDecoder.prototype) {
-      var origDecode = pageWin.TextDecoder.prototype.decode;
-      var wrappedDecode = function() {
-        var res = origDecode.apply(this, arguments);
-        try {
-          if (typeof res === 'string' && res.length > 0) {
-            inspectTextChunk(res);
-          }
-        } catch (e) {}
-        return res;
-      };
-      if (typeof exportFunction === 'function') {
-        pageWin.TextDecoder.prototype.decode = exportFunction(wrappedDecode, pageWin);
-      } else {
-        pageWin.TextDecoder.prototype.decode = wrappedDecode;
-      }
-    }
-
-    if (pageWin.CanvasRenderingContext2D && pageWin.CanvasRenderingContext2D.prototype) {
-      var origFillText = pageWin.CanvasRenderingContext2D.prototype.fillText;
-      var wrappedFillText = function(text) {
-        try {
-          if (typeof text === 'string' && text.length > 0) {
-            inspectTextChunk(text);
-          }
-        } catch (e) {}
-        return origFillText.apply(this, arguments);
-      };
-      if (typeof exportFunction === 'function') {
-        pageWin.CanvasRenderingContext2D.prototype.fillText = exportFunction(wrappedFillText, pageWin);
-      } else {
-        pageWin.CanvasRenderingContext2D.prototype.fillText = wrappedFillText;
-      }
-    }
-
-    Object.defineProperty(pageWin.document, 'hidden', {
-      get: typeof exportFunction === 'function' ? exportFunction(function() { return false; }, pageWin) : function() { return false; },
-      configurable: true
-    });
-    Object.defineProperty(pageWin.document, 'visibilityState', {
-      get: typeof exportFunction === 'function' ? exportFunction(function() { return 'visible'; }, pageWin) : function() { return 'visible'; },
-      configurable: true
-    });
-  } catch (e) {}
-
-  window.addEventListener('visibilitychange', function(e) {
-    e.stopImmediatePropagation();
-  }, true);
+    } catch (e) {}
+  }, 2500);
 })();

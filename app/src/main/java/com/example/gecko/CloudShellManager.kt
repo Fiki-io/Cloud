@@ -92,13 +92,10 @@ class CloudShellManager(context: Context) {
     }
 
     val session: GeckoSession by lazy {
-        // VIEWPORT_MODE_DESKTOP + USER_AGENT_MODE_DESKTOP memastikan tampilan Google Cloud Shell
-        // adalah tampilan Desktop penuh (bukan tampilan mobile)
         val settings = GeckoSessionSettings.Builder()
             .userAgentMode(GeckoSessionSettings.USER_AGENT_MODE_DESKTOP)
             .userAgentOverride(AppConstants.DESKTOP_UA)
             .viewportMode(GeckoSessionSettings.VIEWPORT_MODE_DESKTOP)
-            .suspendMediaWhenInactive(true)
             .build()
 
         GeckoSession(settings).apply {
@@ -108,8 +105,8 @@ class CloudShellManager(context: Context) {
             promptDelegate = createPromptDelegate()
             progressDelegate = createProgressDelegate()
             open(runtime)
-            registerWebExtensionBridge(this)
             loadUri(AppConstants.CLOUD_SHELL_URL)
+            registerWebExtensionBridge(this)
         }
     }
 
@@ -119,7 +116,7 @@ class CloudShellManager(context: Context) {
 
     private fun registerWebExtensionBridge(targetSession: GeckoSession) {
         runtime.webExtensionController
-            .ensureBuiltIn(AppConstants.WEB_EXT_URI, AppConstants.WEB_EXT_ID)
+            .installBuiltIn(AppConstants.WEB_EXT_URI)
             .accept(
                 { ext ->
                     if (ext != null) {
@@ -190,9 +187,20 @@ class CloudShellManager(context: Context) {
     }
 
     fun attachGeckoView(view: GeckoView) {
+        val oldView = geckoViewRef?.get()
+        if (oldView != null && oldView !== view) {
+            try {
+                oldView.releaseSession()
+            } catch (_: Exception) {
+            }
+        }
         geckoViewRef = WeakReference(view)
         val activeSession = popupSession ?: session
         if (view.session !== activeSession) {
+            try {
+                view.releaseSession()
+            } catch (_: Exception) {
+            }
             view.setSession(activeSession)
         }
     }
