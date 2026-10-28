@@ -5,21 +5,30 @@ object PinggyUrlExtractor {
     private val ansiCsiRegex = Regex("\u001B\\[[0-9;?]*[a-zA-Z]")
     private val ansiOscRegex = Regex("\u001B\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)")
 
-    // Prioritas 1: URL Pinggy dengan skema tcp:// dan nomor port (standar tunnel VNC/TCP Pinggy)
+    private val ignoredHosts = setOf(
+        "dashboard.pinggy.io",
+        "www.pinggy.io",
+        "pinggy.io",
+        "a.pinggy.io",
+        "docs.pinggy.io",
+        "blog.pinggy.io"
+    )
+
+    // Prioritas 1: URL Pinggy dengan skema tcp:// dan nomor port (termasuk pinggy-free.link, pinggy.link, pinggy.io)
     private val tcpSchemeRegex = Regex(
-        pattern = "tcp://[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy\\.(?:link|io):\\d+",
+        pattern = "tcp://[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy(?:-[a-zA-Z0-9]+)?\\.(?:link|io|online):\\d+",
         option = RegexOption.IGNORE_CASE
     )
 
-    // Prioritas 2: URL Pinggy dengan skema http:// atau https:// atau tcp:// tanpa/dengan port
-    private val fullUrlRegex = Regex(
-        pattern = "(?:tcp|https?)://[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy\\.(?:link|io)(?::\\d+)?(?:/[^\\s\"'<>]*)?",
-        option = RegexOption.IGNORE_CASE
-    )
-
-    // Prioritas 3: Host:Port Pinggy tanpa skema (bukan bagian dari tcp@a.pinggy.io)
+    // Prioritas 2: Host:Port Pinggy dengan nomor port tanpa skema (bukan bagian dari tcp@a.pinggy.io)
     private val hostPortRegex = Regex(
-        pattern = "(?<![@a-zA-Z0-9.-])[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy\\.(?:link|io):\\d+",
+        pattern = "(?<![@a-zA-Z0-9.-])[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy(?:-[a-zA-Z0-9]+)?\\.(?:link|io|online):\\d+",
+        option = RegexOption.IGNORE_CASE
+    )
+
+    // Prioritas 3: URL Pinggy http/https (mengecualikan domain statis seperti dashboard.pinggy.io)
+    private val fullUrlRegex = Regex(
+        pattern = "(?:tcp|https?)://([a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*\\.pinggy(?:-[a-zA-Z0-9]+)?\\.(?:link|io|online))(?::\\d+)?",
         option = RegexOption.IGNORE_CASE
     )
 
@@ -33,10 +42,11 @@ object PinggyUrlExtractor {
 
     /**
      * Mengekstrak link tunnel Pinggy terbaru dari output terminal.
-     * Mengabaikan argumen perintah 'tcp@a.pinggy.io' dan memprioritaskan endpoint TCP terbaru.
+     * Mendukung domain *.pinggy-free.link, *.pinggy.link, *.pinggy.io dan mengabaikan
+     * link promosi 'https://dashboard.pinggy.io' maupun argumen 'tcp@a.pinggy.io'.
      */
     fun extractLatestPinggyUrl(rawText: String): String? {
-        if (rawText.isBlank() || !rawText.contains("pinggy.", ignoreCase = true)) {
+        if (rawText.isBlank() || !rawText.contains("pinggy", ignoreCase = true)) {
             return null
         }
         val cleaned = stripAnsi(rawText)
@@ -46,17 +56,22 @@ object PinggyUrlExtractor {
             return tcpMatches.last().value.trim()
         }
 
-        val urlMatches = fullUrlRegex.findAll(cleaned)
-            .map { it.value.trim().trimEnd('.', ',', ';', ')', ']') }
-            .filter { !it.contains("@") && !it.endsWith("a.pinggy.io", ignoreCase = true) }
-            .toList()
-        if (urlMatches.isNotEmpty()) {
-            return urlMatches.last()
-        }
-
         val hostPortMatches = hostPortRegex.findAll(cleaned).toList()
         if (hostPortMatches.isNotEmpty()) {
             return "tcp://${hostPortMatches.last().value.trim()}"
+        }
+
+        val urlMatches = fullUrlRegex.findAll(cleaned)
+            .filter { matchResult ->
+                val full = matchResult.value
+                val host = matchResult.groupValues.getOrNull(1)?.lowercase() ?: ""
+                !full.contains("@") && host !in ignoredHosts
+            }
+            .map { it.value.trim().trimEnd('.', ',', ';', ')', ']') }
+            .toList()
+
+        if (urlMatches.isNotEmpty()) {
+            return urlMatches.last()
         }
 
         return null

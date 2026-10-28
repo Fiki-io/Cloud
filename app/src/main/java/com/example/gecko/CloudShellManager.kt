@@ -305,6 +305,7 @@ class CloudShellManager(context: Context) {
     }
 
     fun reconnectPinggyInstant() {
+        _lastPinggyUrl.value = null
         commandJob?.cancel()
         commandJob = scope.launch {
             focusTerminalInFrames()
@@ -315,27 +316,24 @@ class CloudShellManager(context: Context) {
     }
 
     fun copyPinggyOrSelectedText() {
-        val cached = _lastPinggyUrl.value
-        if (!cached.isNullOrBlank()) {
-            // Jika link Pinggy sudah tertangkap otomatis dari stream terminal, langsung salin detik itu juga!
-            deliverCopyToClipboard(cached, isPinggy = true)
-            // Tetap minta scan di background untuk berjaga-jaga ada link yang lebih baru
-            requestFramesScan(silent = true)
-            return
-        }
-
+        // Selalu pindai DOM terminal terbaru terlebih dahulu; fallback ke cache bila frame tidak merespons
         requestFramesScan(silent = false)
     }
 
     private fun requestFramesScan(silent: Boolean) {
         val portsSnapshot = synchronized(activePorts) { activePorts.toList() }
         if (portsSnapshot.isEmpty()) {
+            val fallbackUrl = _lastPinggyUrl.value
             if (!silent) {
-                Toast.makeText(
-                    appContext,
-                    appContext.getString(R.string.toast_copy_empty),
-                    Toast.LENGTH_SHORT
-                ).show()
+                if (!fallbackUrl.isNullOrBlank()) {
+                    deliverCopyToClipboard(fallbackUrl, isPinggy = true)
+                } else {
+                    Toast.makeText(
+                        appContext,
+                        appContext.getString(R.string.toast_copy_empty),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
             return
         }

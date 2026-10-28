@@ -5,6 +5,15 @@
   var lastPinggy = '';
   var port = null;
 
+  var IGNORED_HOSTS = {
+    'dashboard.pinggy.io': true,
+    'www.pinggy.io': true,
+    'pinggy.io': true,
+    'a.pinggy.io': true,
+    'docs.pinggy.io': true,
+    'blog.pinggy.io': true
+  };
+
   function injectAntiZoomStyle() {
     try {
       if (!document.head || document.getElementById('cs-antizoom-style')) return;
@@ -26,21 +35,29 @@
   }
 
   function extractPinggy(str) {
-    if (!str || str.toLowerCase().indexOf('pinggy.') === -1) return null;
+    if (!str || str.toLowerCase().indexOf('pinggy') === -1) return null;
     var clean = str.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
-    var tcpMatch = clean.match(/tcp:\/\/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.pinggy\.(?:link|io):\d+/gi);
+
+    var tcpMatch = clean.match(/tcp:\/\/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.pinggy(?:-[a-zA-Z0-9]+)?\.(?:link|io|online):\d+/gi);
     if (tcpMatch && tcpMatch.length > 0) {
       return tcpMatch[tcpMatch.length - 1];
     }
-    var urlMatch = clean.match(/(?:tcp|https?):\/\/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.pinggy\.(?:link|io)(?::\d+)?/gi);
-    if (urlMatch && urlMatch.length > 0) {
-      for (var i = urlMatch.length - 1; i >= 0; i--) {
-        if (urlMatch[i].indexOf('@') === -1) return urlMatch[i];
-      }
-    }
-    var hostPortMatch = clean.match(/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.pinggy\.(?:link|io):\d+/gi);
+
+    var hostPortMatch = clean.match(/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+\.pinggy(?:-[a-zA-Z0-9]+)?\.(?:link|io|online):\d+/gi);
     if (hostPortMatch && hostPortMatch.length > 0) {
       return 'tcp://' + hostPortMatch[hostPortMatch.length - 1];
+    }
+
+    var urlMatch = clean.match(/(?:tcp|https?):\/\/[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)*\.pinggy(?:-[a-zA-Z0-9]+)?\.(?:link|io|online)(?::\d+)?/gi);
+    if (urlMatch && urlMatch.length > 0) {
+      for (var i = urlMatch.length - 1; i >= 0; i--) {
+        var candidate = urlMatch[i];
+        if (candidate.indexOf('@') !== -1) continue;
+        var hostPart = candidate.replace(/^(?:tcp|https?):\/\//i, '').split(':')[0].split('/')[0].toLowerCase();
+        if (!IGNORED_HOSTS[hostPart]) {
+          return candidate;
+        }
+      }
     }
     return null;
   }
@@ -109,7 +126,7 @@
       var xtermRows = document.querySelector('.xterm-rows, .xterm-accessibility');
       if (xtermRows) {
         var text = xtermRows.innerText || xtermRows.textContent || '';
-        if (text && text.toLowerCase().indexOf('pinggy.') !== -1) {
+        if (text && text.toLowerCase().indexOf('pinggy') !== -1) {
           var found = extractPinggy(text);
           if (found) {
             notifyPinggy(found);
